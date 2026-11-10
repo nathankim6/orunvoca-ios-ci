@@ -13,6 +13,9 @@ jobs:
       matrix:
         device: [iphone, ipad]
     env:
+      # iOS 26.4.1 uses identifier iOS-26-4 and completed the prior runtime smoke.
+      # Do not auto-upgrade this pin merely because a newer runtime is installed.
+      SMOKE_RUNTIME_IDENTIFIER: com.apple.CoreSimulator.SimRuntime.iOS-26-4
       SMOKE_DEVICE_FAMILY: ${{ matrix.device }}
       SMOKE_OUTPUT_DIR: runtime-smoke/${{ matrix.device }}
     steps:
@@ -66,7 +69,19 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$SMOKE_OUTPUT_DIR"
-          xcrun simctl list devices booted --json > "$SMOKE_OUTPUT_DIR/final-booted-state.json"
+          # Nonessential evidence only: CoreSimulator list can hang after a good boot.
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          const output = process.env.SMOKE_OUTPUT_DIR + '/final-booted-state.json';
+          try {
+            fs.writeFileSync(output, execFileSync('xcrun', ['simctl', 'list', 'devices', 'booted', '--json'],
+              { timeout: 10000, killSignal: 'SIGKILL', encoding: 'utf8' }));
+          } catch (error) {
+            console.warn('Nonfatal final-state diagnostic: ' + error);
+            fs.writeFileSync(output + '.error.log', String(error));
+          }
+          JS
           if [ -d "$SMOKE_OUTPUT_DIR/NativeSmoke.xcresult" ]; then
             xcrun xcresulttool export attachments --path "$SMOKE_OUTPUT_DIR/NativeSmoke.xcresult" \
               --output-path "$SMOKE_OUTPUT_DIR/test-attachments" \

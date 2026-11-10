@@ -3,6 +3,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 // Public first screen only. No authentication, credentials, or production mutations.
+// Known-working CI runtime. Never silently select a newer installed runtime.
+const runtimeIdentifier = process.env.SMOKE_RUNTIME_IDENTIFIER || 'com.apple.CoreSimulator.SimRuntime.iOS-26-4';
 const family = process.env.SMOKE_DEVICE_FAMILY;
 if (!['iphone', 'ipad'].includes(family)) throw Error('SMOKE_DEVICE_FAMILY must be iphone or ipad');
 const out = process.env.SMOKE_OUTPUT_DIR || path.join('runtime-smoke', family);
@@ -20,8 +22,14 @@ function run(args, timeout = 60000) {
   }
 }
 function diagnostic(name, args) {
-  try { write(name, run(args, 30000)); }
-  catch (error) { write(`${name}.error.log`, String(error)); }
+  // simctl list can hang even after bootstatus has completed. Evidence collection
+  // must never turn a successful boot into a failure or mask the original error.
+  try { write(name, run(args, 10000)); }
+  catch (error) {
+    console.warn(`Nonfatal diagnostic ${name}: ${error}`);
+    try { write(`${name}.error.log`, String(error)); }
+    catch (writeError) { console.warn(`Could not save diagnostic: ${writeError}`); }
+  }
 }
 const devices = JSON.parse(run(['simctl', 'list', 'devices', 'available', '--json']));
 const runtimes = JSON.parse(run(['simctl', 'list', 'runtimes', '--json']));
@@ -29,8 +37,10 @@ const types = JSON.parse(run(['simctl', 'list', 'devicetypes', '--json']));
 write('available-devices.json', devices);
 write('runtimes.json', runtimes);
 write('device-types.json', types);
+const selectedRuntime = runtimes.runtimes.find(r => r.identifier === runtimeIdentifier && r.isAvailable);
+if (!selectedRuntime) throw Error(`Required pinned iOS runtime ${runtimeIdentifier} is unavailable; refusing newest-runtime fallback.`);
 const choices = Object.entries(devices.devices)
-  .filter(([runtime]) => runtime.includes('.iOS-'))
+  .filter(([runtime]) => runtime === runtimeIdentifier)
   .flatMap(([runtime, list]) => list.filter(d => d.isAvailable).map(d => ({ ...d, runtime })))
   .filter(d => d.name.startsWith(family === 'iphone' ? 'iPhone' : 'iPad'));
 const score = d => family === 'iphone'
@@ -38,11 +48,12 @@ const score = d => family === 'iphone'
   : (/iPad Pro.*13-inch/.test(d.name) ? 3 : /iPad Pro.*12.9-inch/.test(d.name) ? 2 : 1);
 choices.sort((a, b) => score(b) - score(a) || b.runtime.localeCompare(a.runtime, undefined, { numeric: true }) || b.name.localeCompare(a.name, undefined, { numeric: true }));
 const device = choices[0];
-if (!device) throw Error(`No available installed ${family} iOS simulator. This matrix leg must not be skipped.`);
+if (!device) throw Error(`No available installed ${family} simulator on pinned runtime ${runtimeIdentifier}. This matrix leg must not be skipped.`);
 const prefix = family === 'ipad' ? 'iPad' : 'iPhone';
 const metadata = {
   appDisplayName: '옳은VOCA', family, device,
-  runtime: runtimes.runtimes.find(r => r.identifier === device.runtime),
+  runtime: selectedRuntime,
+  runtimeSelection: { policy: 'required-pin-no-fallback', identifier: runtimeIdentifier },
   deviceType: types.devicetypes.find(t => t.identifier === device.deviceTypeIdentifier),
   preferredDeviceSelected: score(device) === 3,
   selectedAt: new Date().toISOString(),
@@ -62,7 +73,7 @@ try {
   diagnostic(`${prefix}-boot-failure-runtimes.json`, ['simctl', 'list', 'runtimes', '--json']);
   throw error;
 }
-write(`${prefix}-booted-state.json`, run(['simctl', 'list', 'devices', 'booted', '--json']));
+diagnostic(`${prefix}-booted-state.json`, ['simctl', 'list', 'devices', 'booted', '--json']);
 run(['simctl', 'status_bar', device.udid, 'override', '--time', '9:41', '--dataNetwork', 'wifi', '--wifiMode', 'active', '--wifiBars', '3', '--batteryState', 'charged', '--batteryLevel', '100']);
 const app = process.env.SMOKE_APP_PATH || 'native/ios/build/DerivedData/Build/Products/Debug-iphonesimulator/OrunVoca.app';
 run(['simctl', 'install', device.udid, app]);
