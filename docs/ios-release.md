@@ -77,3 +77,7 @@ xcodebuild -project native/ios/OrunVoca.xcodeproj -scheme OrunVoca \
 ```
 
 Open the archive in Xcode Organizer and export/upload with the owner's selected team and authorized App Store Connect configuration. No signed IPA, archive upload, paid action, agreement acceptance, or App Store approval is claimed by this implementation.
+
+## Native export-compliance declaration
+
+`ITSAppUsesNonExemptEncryption` is explicitly `false`: the native target uses standard system HTTPS and system file protection, not proprietary or non-exempt cryptography. This describes the inspected native code only; the owner must reconfirm export-compliance answers if dependencies or encryption features change. It does not assert App Store submission or approval.

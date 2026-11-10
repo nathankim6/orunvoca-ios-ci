@@ -13,7 +13,7 @@ struct OrunVocaApp: App {
                 NotebookView().tabItem { Label("오프라인 단어장", systemImage: "rectangle.stack") }
                 NativeSettingsView().tabItem { Label("앱 정보", systemImage: "info.circle") }
             }
-            .tint(Color(red: 0.12, green: 0.31, blue: 0.25))
+            .tint(Color(red: 0, green: 113.0 / 255.0, blue: 227.0 / 255.0))
             .environmentObject(notebook)
         }
     }
