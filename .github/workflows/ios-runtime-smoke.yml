@@ -1,0 +1,51 @@
+name: iOS runtime smoke
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  runtime-smoke:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build unsigned simulator app
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p runtime-smoke
+          xcodebuild -version | tee runtime-smoke/xcode-version.log
+          xcodebuild -project native/ios/OrunVoca.xcodeproj -scheme OrunVoca \
+            -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath native/ios/build/DerivedData CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build 2>&1 | tee runtime-smoke/build.log
+          ditto -c -k --sequesterRsrc --keepParent native/ios/build/DerivedData/Build/Products/Debug-iphonesimulator/OrunVoca.app runtime-smoke/OrunVoca-simulator.zip
+      - name: Boot install launch and capture public first screens
+        shell: bash
+        run: |
+          set -o pipefail
+          node native/ios/scripts/runtime-smoke.mjs 2>&1 | tee runtime-smoke/launch.log
+      - name: Native empty notebook add reveal review and persistence UI smoke
+        timeout-minutes: 6
+        shell: bash
+        run: |
+          set -o pipefail
+          xcrun simctl uninstall "$SMOKE_UDID" com.orunvoca.app
+          xcodebuild -project native/ios/OrunVoca.xcodeproj -scheme OrunVocaSmoke \
+            -configuration Debug -destination "platform=iOS Simulator,id=$SMOKE_UDID" \
+            -derivedDataPath native/ios/build/DerivedData -resultBundlePath runtime-smoke/NativeSmoke.xcresult \
+            -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1 \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO test 2>&1 | tee runtime-smoke/ui-tests.log
+      - name: Export XCTest screenshots
+        if: always()
+        run: |
+          if [ -d runtime-smoke/NativeSmoke.xcresult ]; then
+            xcrun xcresulttool export attachments --path runtime-smoke/NativeSmoke.xcresult --output-path runtime-smoke/test-attachments || true
+          fi
+      - name: Upload runtime screenshots logs app and XCTest result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrunVoca-runtime-smoke
+          path: runtime-smoke/
+          if-no-files-found: error
+          retention-days: 14

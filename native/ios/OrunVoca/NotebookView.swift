@@ -103,7 +103,7 @@ struct CardEditor: View {
     var body: some View {
         Form {
             Section("영어 단어") { TextField("예: discover", text: $word).textInputAutocapitalization(.never).autocorrectionDisabled() }
-            Section("뜻 / 나만의 힌트") { TextField("예: 발견하다", text: $meaning, axis: .vertical).lineLimit(3...8) }
+            Section("뜻 / 나만의 힌트") { TextField("예: 발견하다", text: $meaning, axis: .vertical).lineLimit(3...8).accessibilityIdentifier("native-card-meaning") }
             Section { Text("단어는 200자, 뜻은 1,000자까지 저장할 수 있어요. 복습에서 ‘기억나요’를 누르면 다음 복습 간격이 늘어납니다.").foregroundStyle(.secondary) }
         }
         .navigationTitle(card == nil ? "단어 추가" : "단어 수정")
