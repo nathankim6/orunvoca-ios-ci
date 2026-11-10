@@ -34,6 +34,12 @@ struct NativeSettingsView: View {
                     Text("온라인 학습은 인터넷과 기존 학습 계정이 필요합니다. 온라인 로그인·학습 데이터는 서비스 서버에서 처리됩니다. 이 앱은 별도 광고 또는 분석 SDK를 포함하지 않습니다.")
                     Text("공유한 단어장 파일에는 단어와 뜻이 포함됩니다. 공유 대상과 파일 보관에 유의하세요.")
                 }
+                Section("개인정보 및 지원") {
+                    Link("개인정보 처리방침", destination: URL(string: "https://orunvoca.co.kr/privacy.html")!)
+                    Link("고객 지원", destination: URL(string: "https://orunvoca.co.kr/support.html")!)
+                    Link("온라인 계정 삭제 안내", destination: URL(string: "https://orunvoca.co.kr/delete-account.html")!)
+                    Text("아래 오프라인 단어장 삭제는 온라인 계정을 삭제하지 않습니다.").foregroundStyle(.secondary)
+                }
                 Section("데이터 관리") {
                     Text("기기 변경 또는 앱 삭제 전 단어장에서 TSV 파일을 공유해 보관하세요. TSV에는 복습 일정이 포함되지 않습니다.")
                     Button("오프라인 단어장 모두 삭제", role: .destructive) { confirmingReset = true }
