@@ -1,0 +1,49 @@
+name: iOS unsigned simulator build
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  simulator:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Xcode environment
+        run: |
+          mkdir -p build-logs
+          xcodebuild -version | tee build-logs/xcode-version.log
+      - name: Native notebook model checks
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p native/ios/build
+          swiftc -parse-as-library native/ios/OrunVoca/NotebookStore.swift native/ios/Tests/NotebookChecks.swift -o native/ios/build/notebook-checks 2>&1 | tee build-logs/model-compile.log
+          native/ios/build/notebook-checks "$PWD/native/ios/build" 2>&1 | tee build-logs/model-checks.log
+      - name: Build unsigned generic iOS Simulator app
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild -project native/ios/OrunVoca.xcodeproj -scheme OrunVoca \
+            -configuration Debug -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath native/ios/build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build 2>&1 | tee build-logs/xcodebuild.log
+      - name: Package simulator app
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent native/ios/build/DerivedData/Build/Products/Debug-iphonesimulator/OrunVoca.app OrunVoca-simulator.zip
+      - name: Upload unsigned simulator app
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrunVoca-unsigned-simulator
+          path: OrunVoca-simulator.zip
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload build and model-check logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrunVoca-build-logs
+          path: build-logs/
+          if-no-files-found: warn
+          retention-days: 14
