@@ -1,4 +1,4 @@
-# 옳은보카 iOS release preparation
+# 옳은VOCA iOS release preparation
 
 ## Scope and architecture
 
@@ -49,7 +49,7 @@ swift native/ios/scripts/create-icon.swift src/assets/brand/orun-mark.png \
 3. Study, TTS/audio unlock, practice/exam submission, teacher flows, background/foreground, and failed requests. Test offline launch: online tab must offer retry, native notebook must remain fully usable. Native study voices may require an initial system download; do not promise every voice is preinstalled.
 4. Create/edit/review cards in airplane mode, relaunch persistence, known/forgotten intervals, TSV import (duplicates, malformed rows, big/invalid UTF-8 files), export through Files/share, deletion confirmation, storage failure, corrupt-file preservation. TSV exports contain words/meanings only, not scheduling history. iOS encrypted device backup may include app data.
 5. External links open correctly; no unexpected OAuth redirects. If social login is introduced, evaluate Sign in with Apple and ASWebAuthenticationSession instead of assuming Safari view shares credentials.
-6. Existing online PDF/XLSX/blob downloads, web share, clipboard, popups, microphone/camera features need explicit testing. The wrapper does not implement a generic WKDownload/blob export bridge. Fix required web export flows before release; native notebook TSV export already uses system Files UI.
+6. Build 2 implements exact-origin bounded WKDownload/blob/data export and native printing, including trusted blank-popup print paths. Policy/gesture/JS tests and simulator/device SDK typechecks passed. Actual device printing, PDF pagination, file sharing, authenticated downloads, and the optional cover-photo camera picker still need explicit runtime/device testing. Native notebook TSV import/export uses system Files UI; there is no microphone-recording feature.
 7. Web error/empty states must not leave users staring at spinners. This shell can detect document-level navigation failure, not every web API request failure.
 
 ## App Store gates: not submitted, not approved
@@ -78,6 +78,31 @@ xcodebuild -project native/ios/OrunVoca.xcodeproj -scheme OrunVoca \
 
 Open the archive in Xcode Organizer and export/upload with the owner's selected team and authorized App Store Connect configuration. No signed IPA, archive upload, paid action, agreement acceptance, or App Store approval is claimed by this implementation.
 
-## Native export-compliance declaration
+## Update: 2026-11-11, verified cloud builds
 
-`ITSAppUsesNonExemptEncryption` is explicitly `false`: the native target uses standard system HTTPS and system file protection, not proprietary or non-exempt cryptography. This describes the inspected native code only; the owner must reconfirm export-compliance answers if dependencies or encryption features change. It does not assert App Store submission or approval.
+The user authorized a separate public native-only CI repository: https://github.com/nathankim6/orunvoca-ios-ci . Web/backend source stayed private. Unsigned simulator build42823583892 and native model checks passed with Xcode26.6. The local CoreSimulator restriction did not prevent the cloud build.
+
+A valid existing team Apple Distribution identity was reused without generating or revoking any certificate. Bundle com.orunvoca.app is now registered; its dedicated OrunVoca App Store provisioning profile is ACTIVE. Signing inputs are encrypted GitHub Actions secrets only; no key/certificate data is committed. The team App Store API private key is not stored in public CI.
+
+Signed archive/export run https://github.com/nathankim6/orunvoca-ios-ci/actions/runs/42825295714 succeeded in55seconds. Downloaded IPA: version1.0.0, build1, arm64, team4RBXVT9Q86. Local codesign strict verification passed. Artifact SHA256 matched GitHub. Standard HTTPS/system file protection only; ITSAppUsesNonExemptEncryption=false. This is a signed App Store export, not an ad-hoc install, upload, TestFlight or release.
+
+Actual native runtime smoke is separate. The first run timed out during simulator cold boot before app install. A diagnosed480-second recovery run42844724532 is being monitored; no runtime pass is claimed until its result is inspected.
+
+Public pages verified without login: https://orunvoca.co.kr/privacy.html , https://orunvoca.co.kr/support.html , https://orunvoca.co.kr/delete-account.html . User approved existing ORUN contact and course-end/deletion-request retention. App settings and web footer link these pages.
+
+A dedicated synthetic review student/class and12original sample words were created, separate from real students. Production API checks passed: login, own home/range/stats, sample words, session restore and logout revocation. Review credentials are intentionally absent from source, public CI, logs, screenshots and artifacts.
+
+Remaining first-store gate: no App Store Connect app record exists yet. Apple documents that new app records must be created on the website, not the public REST API. Existing API access supports provisioning/metadata but does not replace this initial web login. The browser still redirects to Apple login. No Apple agreement was accepted and no charge made.
+
+## 2026-11-11 follow-through
+
+- Exact Korean App Store and native display name: **옳은VOCA**.
+- Build 2 freezes each review session at its start. Single/multiple-card model regressions pass, including exact completion counts and no skipped due cards.
+- Final whole-app simulator Swift typecheck, device-owned-file typecheck and plist validation pass. This is not physical-device validation.
+- Native-only public commit: `3ae787c`.
+- iPhone/iPad runtime matrix: https://github.com/nathankim6/orunvoca-ios-ci/actions/runs/42852350880 (results pending at this observation).
+- Signed build 2: https://github.com/nathankim6/orunvoca-ios-ci/actions/runs/42852389511 (results pending at this observation).
+- Prior runtime run `42844724532` failed because its six-minute step timed out despite XCTest success. Its one-card completion count was incorrect; do not treat it as final validation.
+- App Privacy: nine source-verified types, App Functionality only, linked, no tracking, published.
+- Content-rights declaration is unset and requires an accurate owner confirmation. Do not infer third-party distribution rights from repository access.
+- Screenshots, final build upload/selection and review submission are not completed. App Store approval/public release are not claimed.
