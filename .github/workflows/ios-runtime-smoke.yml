@@ -5,47 +5,78 @@ permissions:
   contents: read
 jobs:
   runtime-smoke:
+    name: Native runtime (${{ matrix.device }})
     runs-on: macos-latest
-    timeout-minutes: 15
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        device: [iphone, ipad]
+    env:
+      SMOKE_DEVICE_FAMILY: ${{ matrix.device }}
+      SMOKE_OUTPUT_DIR: runtime-smoke/${{ matrix.device }}
     steps:
       - uses: actions/checkout@v4
-      - name: Build unsigned simulator app
+      - name: Build app and XCTest runner without starting a simulator
+        timeout-minutes: 15
         shell: bash
         run: |
-          set -o pipefail
-          mkdir -p runtime-smoke
-          xcodebuild -version | tee runtime-smoke/xcode-version.log
-          xcodebuild -project native/ios/OrunVoca.xcodeproj -scheme OrunVoca \
+          set -euo pipefail
+          mkdir -p "$SMOKE_OUTPUT_DIR"
+          xcodebuild -version | tee "$SMOKE_OUTPUT_DIR/xcode-version.log"
+          sw_vers | tee "$SMOKE_OUTPUT_DIR/runner-version.log"
+          xcodebuild -project native/ios/OrunVoca.xcodeproj -scheme OrunVocaSmoke \
             -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath native/ios/build/DerivedData CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build 2>&1 | tee runtime-smoke/build.log
-          ditto -c -k --sequesterRsrc --keepParent native/ios/build/DerivedData/Build/Products/Debug-iphonesimulator/OrunVoca.app runtime-smoke/OrunVoca-simulator.zip
-      - name: Boot install launch and capture public first screens
+            -derivedDataPath native/ios/build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build-for-testing \
+            2>&1 | tee "$SMOKE_OUTPUT_DIR/build-for-testing.log"
+          ditto -c -k --sequesterRsrc --keepParent \
+            native/ios/build/DerivedData/Build/Products/Debug-iphonesimulator/OrunVoca.app \
+            "$SMOKE_OUTPUT_DIR/OrunVoca-simulator.zip"
+      - name: Boot only selected device and capture public prelaunch screen
+        id: simulator
+        timeout-minutes: 12
         shell: bash
         run: |
-          set -o pipefail
-          node native/ios/scripts/runtime-smoke.mjs 2>&1 | tee runtime-smoke/launch.log
-      - name: Native empty notebook add reveal review and persistence UI smoke
-        timeout-minutes: 6
+          set -euo pipefail
+          node native/ios/scripts/runtime-smoke.mjs 2>&1 | tee "$SMOKE_OUTPUT_DIR/launch.log"
+      - name: Native exact-count multi-card review and persistence UI regression
+        # Separate from compilation and 480-second cold boot. Prior XCTest itself took 116s,
+        # while total xcode test work took 255s before build; six minutes was not safe.
+        timeout-minutes: 15
         shell: bash
         run: |
-          set -o pipefail
+          set -euo pipefail
+          # Fresh simulator-only sandbox: never a user's notebook or an authenticated session.
           xcrun simctl uninstall "$SMOKE_UDID" com.orunvoca.app
           xcodebuild -project native/ios/OrunVoca.xcodeproj -scheme OrunVocaSmoke \
             -configuration Debug -destination "platform=iOS Simulator,id=$SMOKE_UDID" \
-            -derivedDataPath native/ios/build/DerivedData -resultBundlePath runtime-smoke/NativeSmoke.xcresult \
+            -destination-timeout 60 -derivedDataPath native/ios/build/DerivedData \
+            -resultBundlePath "$SMOKE_OUTPUT_DIR/NativeSmoke.xcresult" \
+            -only-testing:OrunVocaUITests/RuntimeSmokeTests/testEmptyNotebookAddRevealReview \
             -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1 \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO test 2>&1 | tee runtime-smoke/ui-tests.log
-      - name: Export XCTest screenshots
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 480 \
+            -maximum-test-execution-time-allowance 600 \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO test-without-building \
+            2>&1 | tee "$SMOKE_OUTPUT_DIR/ui-tests.log"
+      - name: Export per-device XCTest screenshots and final simulator state
         if: always()
+        timeout-minutes: 5
+        shell: bash
         run: |
-          if [ -d runtime-smoke/NativeSmoke.xcresult ]; then
-            xcrun xcresulttool export attachments --path runtime-smoke/NativeSmoke.xcresult --output-path runtime-smoke/test-attachments || true
+          set -euo pipefail
+          mkdir -p "$SMOKE_OUTPUT_DIR"
+          xcrun simctl list devices booted --json > "$SMOKE_OUTPUT_DIR/final-booted-state.json"
+          if [ -d "$SMOKE_OUTPUT_DIR/NativeSmoke.xcresult" ]; then
+            xcrun xcresulttool export attachments --path "$SMOKE_OUTPUT_DIR/NativeSmoke.xcresult" \
+              --output-path "$SMOKE_OUTPUT_DIR/test-attachments" \
+              2>&1 | tee "$SMOKE_OUTPUT_DIR/attachment-export.log"
           fi
-      - name: Upload runtime screenshots logs app and XCTest result
+      - name: Upload per-device screenshots logs app and XCTest result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: OrunVoca-runtime-smoke
-          path: runtime-smoke/
+          name: OrunVoca-runtime-smoke-${{ matrix.device }}
+          path: runtime-smoke/${{ matrix.device }}/
           if-no-files-found: error
           retention-days: 14

@@ -25,7 +25,7 @@ struct NativeSettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("옳은보카") {
+                Section("옳은VOCA") {
                     Label("매일 조금씩, 오래 기억하는 단어", systemImage: "leaf")
                     Text("버전 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0")")
                 }

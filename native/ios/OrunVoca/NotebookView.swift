@@ -35,7 +35,7 @@ struct NotebookView: View {
                 Section {
                     VStack(alignment: .leading, spacing: 12) {
                         Label("내 기기에 저장, 어디서나 복습", systemImage: "wifi.slash").font(.headline)
-                        Text("단어 \(notebook.cards.count)개 · 지금 복습 \(notebook.dueCards.count)개").foregroundStyle(.secondary)
+                        Text("단어 \(notebook.cards.count)개 · 지금 복습 \(notebook.dueCards.count)개").foregroundStyle(.secondary).accessibilityIdentifier("native-notebook-summary")
                         Button("오늘의 복습 시작") { reviewing = true }
                             .buttonStyle(.borderedProminent).disabled(notebook.dueCards.isEmpty)
                     }.padding(.vertical, 8)
@@ -123,16 +123,17 @@ struct ReviewView: View {
     @EnvironmentObject var notebook: NotebookStore
     @Environment(\.dismiss) var dismiss
     @StateObject private var pronunciation = Pronunciation()
-    let queue: [VocabularyCard]
-    @ValueState<Int> private var index = 0
+    @ValueState<VocabularyReviewSession> private var session: VocabularyReviewSession
     @ValueState<Bool> private var revealed = false
+    init(queue: [VocabularyCard]) {
+        _session = ValueState(wrappedValue: VocabularyReviewSession(cards: queue))
+    }
     var body: some View {
         ScrollView {
             VStack(spacing: 28) {
-                if index < queue.count {
-                    let card = queue[index]
-                    ProgressView(value: Double(index), total: Double(queue.count)).accessibilityLabel("복습 진행률")
-                    Text("\(index + 1) / \(queue.count)").foregroundStyle(.secondary)
+                if let card = session.currentCard {
+                    ProgressView(value: Double(session.completedCount), total: Double(session.totalCount)).accessibilityLabel("복습 진행률")
+                    Text("\(session.completedCount + 1) / \(session.totalCount)").foregroundStyle(.secondary).accessibilityIdentifier("native-review-progress")
                     Text(card.word).font(.largeTitle.bold()).multilineTextAlignment(.center).textSelection(.enabled)
                     Button("발음 듣기", systemImage: "speaker.wave.2") { pronunciation.speak(card.word) }.buttonStyle(.bordered)
                     if revealed {
@@ -143,7 +144,12 @@ struct ReviewView: View {
                         Button("뜻 확인하기") { revealed = true }.buttonStyle(.borderedProminent)
                     }
                 } else {
-                    ContentUnavailableView("오늘의 복습을 마쳤어요", systemImage: "checkmark.seal", description: Text("총 \(queue.count)개를 복습했어요. 어려운 단어는 10분 뒤, 기억한 단어는 1일 이후 다시 만나요."))
+                    ContentUnavailableView {
+                        Label("오늘의 복습을 마쳤어요", systemImage: "checkmark.seal")
+                    } description: {
+                        Text("총 \(session.completedCount)개를 복습했어요. 어려운 단어는 10분 뒤, 기억한 단어는 1일 이후 다시 만나요.")
+                            .accessibilityIdentifier("native-review-summary")
+                    }
                     Button("단어장으로") { dismiss() }.buttonStyle(.borderedProminent)
                 }
             }.frame(maxWidth: 600).padding(28).frame(maxWidth: .infinity)
@@ -154,6 +160,6 @@ struct ReviewView: View {
     }
     private func advance(_ card: VocabularyCard, remembered: Bool) {
         notebook.review(card, remembered: remembered)
-        if notebook.error == nil { index += 1; revealed = false; pronunciation.stop() }
+        if notebook.error == nil { session.advance(); revealed = false; pronunciation.stop() }
     }
 }

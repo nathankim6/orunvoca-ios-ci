@@ -93,3 +93,16 @@ enum NotebookError: LocalizedError {
         }
     }
 }
+
+// A running review owns an immutable snapshot. Store updates must not shrink or reorder it.
+struct VocabularyReviewSession {
+    let cards: [VocabularyCard]
+    private(set) var completedCount = 0
+    var totalCount: Int { cards.count }
+    var currentCard: VocabularyCard? { completedCount < totalCount ? cards[completedCount] : nil }
+    var isComplete: Bool { currentCard == nil }
+    mutating func advance() {
+        guard !isComplete else { return }
+        completedCount += 1
+    }
+}
