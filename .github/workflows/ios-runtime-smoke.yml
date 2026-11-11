@@ -6,16 +6,26 @@ permissions:
 jobs:
   runtime-smoke:
     name: Native runtime (${{ matrix.device }})
-    runs-on: macos-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
-        device: [iphone, ipad]
+        include:
+          # iPhone cold launch is intermittently unresponsive on the 7GB arm64 host.
+          # The official standard Intel image has Xcode 26.3 and iOS 26.2 installed.
+          - device: iphone
+            runner: macos-15-intel
+            developer: /Applications/Xcode_26.3.app/Contents/Developer
+            runtime: com.apple.CoreSimulator.SimRuntime.iOS-26-2
+          # Keep the independently passing iPad configuration unchanged.
+          - device: ipad
+            runner: macos-latest
+            developer: /Applications/Xcode.app/Contents/Developer
+            runtime: com.apple.CoreSimulator.SimRuntime.iOS-26-4
     env:
-      # iOS 26.4.1 uses identifier iOS-26-4 and completed the prior runtime smoke.
-      # Do not auto-upgrade this pin merely because a newer runtime is installed.
-      SMOKE_RUNTIME_IDENTIFIER: com.apple.CoreSimulator.SimRuntime.iOS-26-4
+      DEVELOPER_DIR: ${{ matrix.developer }}
+      SMOKE_RUNTIME_IDENTIFIER: ${{ matrix.runtime }}
       SMOKE_DEVICE_FAMILY: ${{ matrix.device }}
       SMOKE_OUTPUT_DIR: runtime-smoke/${{ matrix.device }}
     steps:
