@@ -40,7 +40,11 @@ final class RuntimeSmokeTests: XCTestCase {
         let meaningField = app.descendants(matching: .any).matching(identifier: "native-card-meaning").firstMatch
         XCTAssertTrue(meaningField.waitForExistence(timeout: 5))
         meaningField.tap()
+        // The multiline field's center can be empty line space on iPad. Target the
+        // visible first input line after layout settles, not a review/grade button.
+        meaningField.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.2)).tap()
         meaningField.typeText(meaning)
+        XCTAssertEqual(meaningField.value as? String, meaning, "Meaning must be entered in the intended field")
         app.buttons["저장"].tap()
         XCTAssertTrue(app.staticTexts[word].waitForExistence(timeout: 5))
     }
