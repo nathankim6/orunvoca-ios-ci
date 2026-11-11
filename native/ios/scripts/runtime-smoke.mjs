@@ -75,6 +75,13 @@ try {
 }
 diagnostic(`${prefix}-booted-state.json`, ['simctl', 'list', 'devices', 'booted', '--json']);
 run(['simctl', 'status_bar', device.udid, 'override', '--time', '9:41', '--dataNetwork', 'wifi', '--wifiMode', 'active', '--wifiBars', '3', '--batteryState', 'charged', '--batteryLevel', '100']);
+if (process.env.SMOKE_PREPARE_FOR_XCTEST === '1') {
+  // CI must still execute the separate mandatory XCTest step. This is device preparation,
+  // not an app/runtime success claim. XCTest installs, cold-launches and verifies the UI.
+  metadata.validationMode = 'device-preparation-before-mandatory-xctest';
+  write('device.json', metadata);
+  console.log('Device prepared; app installation, launch and loaded web/native UI must pass XCTest next.');
+} else {
 const app = process.env.SMOKE_APP_PATH || 'native/ios/build/DerivedData/Build/Products/Debug-iphonesimulator/OrunVoca.app';
 run(['simctl', 'install', device.udid, app]);
 let launched = false;
@@ -96,3 +103,5 @@ try {
   if (launched) run(['simctl', 'terminate', device.udid, 'com.orunvoca.app']);
 }
 console.log(`${prefix} public prelaunch screenshot captured and app terminated; XCTest is a separate CI step.`);
+
+}

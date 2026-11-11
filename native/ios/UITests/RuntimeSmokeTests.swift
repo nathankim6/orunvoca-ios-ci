@@ -75,7 +75,20 @@ final class RuntimeSmokeTests: XCTestCase {
         // The captured iPad AX hierarchy contains nested duplicate buttons: firstMatch is intentional.
         let offlineTab = app.buttons.matching(identifier: "오프라인 단어장").firstMatch
         XCTAssertTrue(offlineTab.waitForExistence(timeout: 30))
-        capture("online-first-screen")
+        // Do not accept a loading spinner as evidence that the actual website works.
+        // This public, unauthenticated heading must come from the live WKWebView document.
+        let onlineHeading = app.webViews.firstMatch.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS %@", "다시, 반가워요.")).firstMatch
+        let onlineReady = onlineHeading.waitForExistence(timeout: 90)
+        if !onlineReady {
+            capture("online-load-failed")
+            let hierarchy = XCTAttachment(string: app.debugDescription)
+            hierarchy.name = "online-load-failed-hierarchy"
+            hierarchy.lifetime = .keepAlways
+            add(hierarchy)
+        }
+        XCTAssertTrue(onlineReady, "The live public login page must finish loading in WKWebView")
+        capture("online-learning-loaded")
         offlineTab.tap()
         XCTAssertTrue(app.staticTexts["나만의 단어장을 만들어 보세요"].waitForExistence(timeout: 10))
         capture("empty-native-notebook")

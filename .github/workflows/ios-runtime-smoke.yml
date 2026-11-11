@@ -26,6 +26,7 @@ jobs:
     env:
       DEVELOPER_DIR: ${{ matrix.developer }}
       SMOKE_RUNTIME_IDENTIFIER: ${{ matrix.runtime }}
+      SMOKE_PREPARE_FOR_XCTEST: "1"
       SMOKE_DEVICE_FAMILY: ${{ matrix.device }}
       SMOKE_OUTPUT_DIR: runtime-smoke/${{ matrix.device }}
     steps:
@@ -46,7 +47,7 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent \
             native/ios/build/DerivedData/Build/Products/Debug-iphonesimulator/OrunVoca.app \
             "$SMOKE_OUTPUT_DIR/OrunVoca-simulator.zip"
-      - name: Boot only selected device and capture public prelaunch screen
+      - name: Prepare only selected device for mandatory XCTest
         id: simulator
         timeout-minutes: 12
         shell: bash
@@ -61,7 +62,8 @@ jobs:
         run: |
           set -euo pipefail
           # Fresh simulator-only sandbox: never a user's notebook or an authenticated session.
-          xcrun simctl uninstall "$SMOKE_UDID" com.orunvoca.app
+          # The hosted simulator is fresh; XCTest installs and cold-launches the app.
+          # The test asserts an empty notebook, so stale app data cannot silently pass.
           xcodebuild -project native/ios/OrunVoca.xcodeproj -scheme OrunVocaSmoke \
             -configuration Debug -destination "platform=iOS Simulator,id=$SMOKE_UDID" \
             -destination-timeout 60 -derivedDataPath native/ios/build/DerivedData \
