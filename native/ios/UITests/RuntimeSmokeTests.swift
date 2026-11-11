@@ -59,7 +59,9 @@ final class RuntimeSmokeTests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication(bundleIdentifier: "com.orunvoca.app")
         app.launch()
-        let offlineTab = app.tabBars.buttons["오프라인 단어장"]
+        // iPad presents native tabs as top-level buttons, not descendants of a TabBar.
+        // The captured iPad AX hierarchy contains nested duplicate buttons: firstMatch is intentional.
+        let offlineTab = app.buttons.matching(identifier: "오프라인 단어장").firstMatch
         XCTAssertTrue(offlineTab.waitForExistence(timeout: 30))
         capture("online-first-screen")
         offlineTab.tap()
