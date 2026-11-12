@@ -3,7 +3,7 @@
 set -uo pipefail
 APP="$1"; OUT="$2"; mkdir -p "$OUT"; FAIL=0
 BIN="$APP/Contents/MacOS/OrunVoca"
-ax() { osascript -e 'tell application "System Events" to tell (first process whose name is "OrunVoca") to get value of every static text of entire contents of window 1' 2>&1; }
+ax() { osascript -l JavaScript -e 'function run(){const se=Application("System Events");const p=se.processes.byName("OrunVoca");const out=[];const seen={n:0};function walk(el,d){if(d>18||seen.n>4000)return;let kids=[];try{kids=el.uiElements();}catch(e){return;}for(const k of kids){seen.n++;let line=[];for(const f of ["role","title","value","description"]){try{const v=k[f]();if(v!==null&&v!==undefined&&String(v).length)line.push(String(v).slice(0,200));}catch(e){}}if(line.length>1)out.push(line.join(" | "));walk(k,d+1);}}walk(p.windows[0],0);return out.join("\n");}' 2>&1; }
 launch() { "$BIN" "$@" > "$OUT/app-$1-$2.log" 2>&1 & echo $! > "$OUT/pid"; }
 stop() { kill "$(cat "$OUT/pid")" 2>/dev/null; sleep 2; }
 check() { # name, expected text, launch args...
