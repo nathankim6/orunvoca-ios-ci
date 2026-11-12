@@ -1,0 +1,32 @@
+name: macOS unsigned build and runtime smoke
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  macos:
+    name: Build universal app and launch it
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sw_vers; xcodebuild -version; xcrun --sdk macosx swiftc --version
+      - name: Build unsigned universal app and run model checks
+        run: bash native/macOS/build-app.sh build
+      - name: Launch app and verify windows through Accessibility
+        run: bash native/macOS/runtime-smoke.sh "native/macOS/build/옳은VOCA.app" "$PWD/mac-smoke"
+      - name: Package
+        if: always()
+        run: |
+          cd native/macOS/build && ditto -c -k --sequesterRsrc --keepParent "옳은VOCA.app" "$GITHUB_WORKSPACE/OrunVoca-mac-unsigned.zip" || true
+          shasum -a 256 "$GITHUB_WORKSPACE/OrunVoca-mac-unsigned.zip" | tee "$GITHUB_WORKSPACE/mac-smoke/app-zip.sha256" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: OrunVoca-macOS-unsigned
+          path: |
+            OrunVoca-mac-unsigned.zip
+            mac-smoke
+            native/macOS/build/model-checks.log
