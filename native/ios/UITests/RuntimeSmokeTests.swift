@@ -82,7 +82,7 @@ final class RuntimeSmokeTests: XCTestCase {
         // Do not accept a loading spinner as evidence that the actual website works.
         // This public, unauthenticated heading must come from the live WKWebView document.
         let onlineHeading = app.webViews.firstMatch.descendants(matching: .any)
-            .matching(NSPredicate(format: "label CONTAINS %@", "다시, 반가워요.")).firstMatch
+            .matching(NSPredicate(format: "label CONTAINS %@", "액세스 코드")).firstMatch
         let onlineReady = onlineHeading.waitForExistence(timeout: 90)
         if !onlineReady {
             capture("online-load-failed")
