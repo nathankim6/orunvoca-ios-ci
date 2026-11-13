@@ -61,8 +61,11 @@ test('fixture page is self-contained and labeled synthetic', () => {
   assert.deepStrictEqual(Object.keys(fixture.buildRoutes()), ['/', '/fixture/beep.wav']);
 });
 test('workflow: manual only, read-only token, no release/publish/secrets', () => {
-  const wf = fs.readFileSync(path.join(root, '../../.github/workflows/windows-build.yml'), 'utf8');
-  const on = wf.match(/\non:\n([\s\S]*?)\npermissions:/)[1].trim();
+  // Windows checkouts may convert to CRLF (core.autocrlf); normalize before line-anchored matching.
+  const wf = fs.readFileSync(path.join(root, '../../.github/workflows/windows-build.yml'), 'utf8').replace(/\r\n?/g, '\n');
+  const onBlock = wf.match(/\non:\n([\s\S]*?)\npermissions:/);
+  assert.ok(onBlock, 'workflow has an on: block followed by permissions:');
+  const on = onBlock[1].trim();
   assert.strictEqual(on, 'workflow_dispatch:');
   assert.match(wf, /permissions:\n {2}contents: read/);
   assert.ok(!/\$\{\{\s*secrets\.|GH_TOKEN|GITHUB_TOKEN|softprops|action-gh-release|gh release|npm publish/i.test(wf));
