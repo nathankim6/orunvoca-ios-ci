@@ -29,6 +29,9 @@ test('main.js: 보기 menu is 데스크톱/태블릿/휴대폰 on Ctrl+1/2/3; no
   const applyLayout = m.slice(m.indexOf('function applyLayout'), m.indexOf('function setMode'));
   assert.ok(!/loadURL|loadFile|reload|new WebContentsView|removeChildView|addChildView|destroy/.test(applyLayout), 'mode change never reloads or recreates views');
   assert.match(applyLayout, /remoteView\.setBounds\(layout\.computeRemoteBounds\(mode, w, h\)\)/);
+  // Relayout on window resize AND on the content view's own layout (client area can change without a resize).
+  assert.match(m, /win\.on\('resize', applyLayout\);/);
+  assert.match(m, /win\.contentView\.on\('bounds-changed', applyLayout\);/);
   // Secure print popup support is untouched.
   assert.match(m, /sec\.isPrintPopupRequest\(details, wc\.getURL\(\), printPopups\.size\)/);
   assert.match(m, /wc\.on\('did-create-window', \(child, details\) => hardenPrintPopup\(child, details\)\)/);
@@ -230,4 +233,25 @@ test('print regression: in every mode the trusted single about:blank print popup
   assert.strictEqual(rwc.windowOpen('about:blank'), null);
   assert.deepStrictEqual(f.opened, []);
   assert.strictEqual(parts(f).remote, remote);
+});
+
+test('fake runtime: client area shrinking without a window resize (menu bar) re-lays out every mode', async () => {
+  const f = createFakeElectron({ origin: fixture.TRUSTED_ORIGIN, wavPath: fixture.WAV_PATH });
+  loadMainWith(f.electron);
+  f.fireReady(); await settle();
+  const { win, remote, rwc, twc, toolbar } = parts(f);
+  let resizes = 0; win.on('resize', () => resizes++);
+  for (const m of MODES) {
+    f.electron.ipcMain.emit('shell:set-mode', { sender: twc }, m);
+    const [w, h] = win.getContentSize();
+    win.size = [w, h - 26]; // client area only; no 'resize'
+    assert.strictEqual(remote.getBounds().height, h - 40, `${m}: stale until the content view reports its layout`);
+    win.contentView.emit('bounds-changed');
+    const want = { desktop: w, tablet: Math.min(768, w), phone: Math.min(390, w) }[m];
+    assert.deepStrictEqual(remote.getBounds(), { x: Math.floor((w - want) / 2), y: 40, width: want, height: h - 26 - 40 }, m);
+    assert.deepStrictEqual(toolbar.getBounds(), { x: 0, y: 0, width: w, height: 40 });
+    assert.strictEqual(twc.toolbarMode, m);
+  }
+  assert.strictEqual(resizes, 0);
+  assert.strictEqual(parts(f).rwc, rwc);
 });

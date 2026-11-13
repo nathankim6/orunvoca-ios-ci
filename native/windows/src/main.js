@@ -97,6 +97,9 @@ function createWindow() {
   // Offline/blocked startup must not raise an unhandled rejection; Chromium shows its error page.
   rc().loadURL(sec.SITE_ORIGIN).catch((err) => console.error('remote load failed:', err && err.code));
   win.on('resize', applyLayout);
+  // The client area can change while the outer window does not (e.g. the Windows menu bar is attached
+  // after the first layout on a small screen), so no 'resize' fires: follow the content view's own layout too.
+  win.contentView.on('bounds-changed', applyLayout);
   applyLayout();
 }
 

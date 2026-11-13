@@ -6,7 +6,11 @@ const Module = require('node:module');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 
-function createFakeElectron({ origin, wavPath, onSetBounds, toolbarFitWidth = 300, toolbarNames = null } = {}) {
+// lateClientShrink: reproduces Windows CI run 43388542784 (1024x768 screen): after the first layout the
+// 26px menu bar takes client area while the outer window keeps its size, so NO 'resize' is emitted; only the
+// content view is re-laid out ('bounds-changed'). Applied once, when the remote's first page load completes.
+// dropBoundsChanged: the content view never reports that layout (to prove the probe catches a stale layout).
+function createFakeElectron({ origin, wavPath, onSetBounds, toolbarFitWidth = 300, toolbarNames = null, lateClientShrink = 0, dropBoundsChanged = false } = {}) {
   let resolveReady;
   const readyPromise = new Promise((r) => { resolveReady = r; });
   const sessions = new Map();
@@ -42,6 +46,11 @@ function createFakeElectron({ origin, wavPath, onSetBounds, toolbarFitWidth = 30
       const res = await h(new Request(u));
       this.url = new URL(u).href;
       this.doc = res.ok ? { loadId: 'L' + Math.random().toString(36).slice(2) } : null;
+      const win = this.view && this.view.parentWindow;
+      if (res.ok && win && win.pendingClientShrink) {
+        win.size[1] -= win.pendingClientShrink; win.pendingClientShrink = 0;
+        if (!dropBoundsChanged) win.contentView.emit('bounds-changed');
+      }
     }
     reload() { return this.loadURL(this.url); }
     getURL() { return this.url; }
@@ -155,7 +164,12 @@ function createFakeElectron({ origin, wavPath, onSetBounds, toolbarFitWidth = 30
     getBounds() { return { ...this.bounds }; }
   }
   class BaseWindow extends EventEmitter {
-    constructor(o) { super(); this.o = o; this.size = [o.width - 16, o.height - 39]; this.contentView = { children: [], addChildView: (v) => this.contentView.children.push(v) }; windows.push(this); }
+    constructor(o) {
+      super(); this.o = o; this.size = [o.width - 16, o.height - 39];
+      this.contentView = Object.assign(new EventEmitter(), { children: [], addChildView: (v) => { v.parentWindow = this; this.contentView.children.push(v); } });
+      this.pendingClientShrink = windows.length === 0 ? lateClientShrink : 0;
+      windows.push(this);
+    }
     static getAllWindows() { return windows.slice(); }
     getContentSize() { return this.size.slice(); }
     setContentSize(w, h) { this.size = [w, h]; this.emit('resize'); }

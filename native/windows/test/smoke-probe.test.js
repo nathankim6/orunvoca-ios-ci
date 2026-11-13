@@ -137,3 +137,28 @@ test('probe is self-contained (survives fn.toString() serialization used by the 
   assert.strictEqual(r.ok, true);
 });
 
+
+// Regression for Windows CI run 43388542784 (installed exe, 1024x768 runner): the menu bar took 26px of client
+// area after the first layout without a window 'resize'; the remote view stayed 26px too tall (641 vs 615).
+test('late client-area shrink without resize (menu bar attach): shell re-lays out, probe passes', async () => {
+  const { r } = await runProbe({ lateClientShrink: 26 });
+  assert.deepStrictEqual(failing(r), []);
+  assert.deepStrictEqual(r.info.initialContentSize, { w: 1184, h: 735 });
+  assert.deepStrictEqual(r.info.steps[0].actual, { x: 0, y: 40, width: 1184, height: 695 });
+});
+test('late client-area shrink in installed-exe mode (blocked first load, then fixture): probe passes', async () => {
+  const f = createFakeElectron({ origin: fixture.TRUSTED_ORIGIN, wavPath: fixture.WAV_PATH, lateClientShrink: 26 });
+  globalThis.__orunSmoke = undefined;
+  loadMainWith(f.electron);
+  f.fireReady();
+  await new Promise((r) => setTimeout(r, 20));
+  const r = await probe(f.electron, fixture.probeOptions({ label: 'mock-installed', timeScale: 0.02, reloadAfterIntercept: true }));
+  assert.deepStrictEqual(failing(r), []);
+  assert.strictEqual(r.info.steps[0].actual.height, r.info.steps[0].content.h - 40);
+});
+test('probe reproduces the CI failure when the shell misses the client-area change (stale initial height)', async () => {
+  const { r } = await runProbe({ lateClientShrink: 26, dropBoundsChanged: true });
+  assert.deepStrictEqual(failing(r), ['1 initial: remote view bounds are the real desktop viewport']);
+  const c = r.checks.find((x) => !x.ok).detail;
+  assert.deepStrictEqual([c.expected.height, c.actual.height], [695, 721]);
+});
