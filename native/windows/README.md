@@ -15,7 +15,10 @@ Electron 기반 Windows 데스크톱 셸. https://orunvoca.co.kr 를 원격 콘�
 
 ## 보안
 contextIsolation, sandbox, webSecurity, nodeIntegration 끔. 원격 콘텐츠에는 preload/IPC 없음.
-탐색은 정확히 `https://orunvoca.co.kr` 만 허용. 안전한 외부 https 링크만 기본 브라우저로 열기, 팝업/기타 프로토콜 차단.
+탐색은 정확히 `https://orunvoca.co.kr` 만 허용 (사용자명/비밀번호가 포함된 URL 거부). 안전한 외부 https 링크만 기본 브라우저로 열기, 기타 프로토콜 차단.
+팝업은 기본 차단. 예외는 사이트 시험지 인쇄 흐름(`window.open('', '_blank')` → `document.write` → `print()` → `close()`)용 **인쇄 팝업 1개**뿐:
+열어준 페이지가 정확히 사이트 URL이고, 팝업이 about:blank이며 실제 frame origin이 사이트 origin일 때만 허용. 팝업은 sandbox/contextIsolation,
+nodeIntegration 끔, preload 없음, 메뉴 없음, 중첩 팝업 차단, 모든 탐색 차단, 동시 1개 제한(닫히면 해제). 셸은 팝업을 타이머로 닫거나 대신 인쇄하지 않습니다.
 모든 권한 요청 거부. 다운로드는 다운로드 폴더에 저장만 하고 자동 실행하지 않음.
 **테스트 훅 없음**: `src/`에는 테스트 URL/환경변수/플래그가 없고, 패키지에는 `src/**`와 `package.json`만 들어갑니다 (`smoke/check-asar.js`로 확인).
 
@@ -28,7 +31,8 @@ contextIsolation, sandbox, webSecurity, nodeIntegration 끔. 원격 콘텐츠에
   재시도는 실행/연결 인프라 실패에 한해 1회만. probe가 시작된 뒤의 실패는 재시도하지 않음. 네트워크는 `--proxy-server=127.0.0.1:9`,
   `--host-resolver-rules=MAP * ~NOTFOUND` 로 차단.
 - `smoke/probe.js` 검사: 창 1개/뷰 2개, 데스크톱 전체 폭, 휴대폰 실제 390px(innerWidth, media query), 툴바/메뉴/창 크기 변경 후에도
-  같은 webContents id/렌더러 pid/세션, 문서 재로드 없음, 노트/사이드바 없음, 원격 페이지 Node/브리지 없음, 탐색/팝업/권한 차단, 합성 오디오 fetch+decode.
+  같은 webContents id/렌더러 pid/세션, 문서 재로드 없음, 노트/사이드바 없음, 원격 페이지 Node/브리지 없음, 탐색/무관한 팝업/권한 차단, 합성 오디오 fetch+decode,
+  합성 시험지 인쇄 팝업(같은 origin 접근, sandbox/Node 없음, 중첩 팝업·탐색 차단, 1개 제한, 닫힘 후 재허용, Electron `printToPDF` 결과 `%PDF` 파일을 증거로 저장. 실제 프린터 검증 아님).
 - `smoke/windows-installer-smoke.ps1`: 무인 설치(`/S /currentuser /D=`) → 파일/레지스트리/바로가기 확인 → 일반 실행+화면 캡처(시각 참고용) →
   inspector probe → 설치된 asar 교차 검사 → 무인 제거 → 깨끗한 제거 확인.
 

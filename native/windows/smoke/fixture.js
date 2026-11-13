@@ -24,6 +24,16 @@ function buildWav({ sampleRate = 8000, ms = 150, freq = 880 } = {}) {
   return Buffer.concat([h, data]);
 }
 
+// Synthetic test paper written into the print popup (mirrors the site's CreateTestPaper flow).
+const PAPER_MARK = 'SYNTHETIC TEST PAPER';
+function buildPaperHtml() {
+  return '<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>' + PAPER_MARK + ' - 시험지 인쇄</title>' +
+    "<style>body{font:16px 'Malgun Gothic',sans-serif;margin:24px}h1{font-size:20px}li{margin:8px 0}</style></head><body>" +
+    '<h1>' + PAPER_MARK + ' (CI fixture, no real student data)</h1>' +
+    '<ol><li>apple → ________</li><li>book → ________</li><li>river → ________</li></ol>' +
+    '<p>정답: 사과, 책, 강</p></body></html>';
+}
+
 function buildFixtureHtml() {
   return `<!doctype html>
 <html lang="ko"><head><meta charset="utf-8">
@@ -45,6 +55,8 @@ button{font-size:16px;padding:10px 14px;border-radius:8px;border:0;background:#2
 </div>
 <script>
 (function () {
+  var PAPER = ${JSON.stringify(buildPaperHtml())};
+  var PAPER_MARK = ${JSON.stringify(PAPER_MARK)};
   var loadId = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
   var paint = function () {
     document.getElementById('vw').textContent = innerWidth + ' x ' + innerHeight;
@@ -85,6 +97,38 @@ button{font-size:16px;padding:10px 14px;border-radius:8px;border:0;background:#2
     playPronunciation: playPronunciation,
     tryNavigate: function (u) { location.href = u; return true; },
     tryPopup: function (u) { return String(window.open(u)); },
+    // Same calls as the site: window.open('', '_blank'), document.write(html), (print()), close().
+    openPrintPopup: function () {
+      var w = window.open('', '_blank');
+      if (!w) return { opened: false };
+      window.__printWin = w;
+      w.document.write(PAPER);
+      w.document.close();
+      return window.__fixture.printPopupState();
+    },
+    printPopupState: function () {
+      var w = window.__printWin; var r = { opened: !!w, closed: w ? w.closed : null };
+      try {
+        r.childOrigin = w.location.origin; r.childHref = w.location.href; r.title = w.document.title;
+        r.sameOriginAccess = w.document.body.innerText.indexOf(PAPER_MARK) >= 0;
+        r.childHasRequire = typeof w.require; r.childHasProcess = typeof w.process; r.childHasBridge = typeof w.orunShell;
+      } catch (e) { r.sameOriginAccess = false; r.error = String(e); }
+      return r;
+    },
+    // Nested popups attempted from inside the popup's own realm.
+    printPopupNested: function () {
+      var w = window.__printWin;
+      return { blank: String(w.eval("window.open('', '_blank')")), external: String(w.eval("window.open('http://example.invalid/')")) };
+    },
+    // Navigation attempts: popup self-navigation and opener-initiated navigation of the popup.
+    printPopupNavigate: function (u) {
+      var w = window.__printWin;
+      try { w.eval('location.href = ' + JSON.stringify(u)); } catch (e) {}
+      try { w.location.href = u; } catch (e) {}
+      return true;
+    },
+    openSecondPrintPopup: function () { return String(window.open('', '_blank')); },
+    closePrintPopup: function () { if (window.__printWin) window.__printWin.close(); window.__printWin = null; return true; },
     notificationPermission: function () {
       return Promise.resolve(Notification.requestPermission()).then(String, function (e) { return 'error: ' + e; });
     }
@@ -106,4 +150,4 @@ function probeOptions(extra = {}) {
     installIntercept: true, reloadAfterIntercept: false, ...extra };
 }
 
-module.exports = { TRUSTED_ORIGIN, PARTITION, WAV_PATH, buildWav, buildFixtureHtml, buildRoutes, probeOptions };
+module.exports = { TRUSTED_ORIGIN, PARTITION, WAV_PATH, PAPER_MARK, buildPaperHtml, buildWav, buildFixtureHtml, buildRoutes, probeOptions };

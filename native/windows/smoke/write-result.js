@@ -11,8 +11,14 @@ function writeResult(outDir, label, result, extra = {}) {
     fs.writeFileSync(path.join(outDir, f), Buffer.from(b64, 'base64'));
     shotFiles[name] = f;
   }
+  const pdfFiles = {};
+  for (const [name, b64] of Object.entries(result.pdfs || {})) {
+    const f = `${label}-${name}.pdf`;
+    fs.writeFileSync(path.join(outDir, f), Buffer.from(b64, 'base64'));
+    pdfFiles[name] = f;
+  }
   const json = { label, ok: !!result.ok, generatedAt: new Date().toISOString(), ...extra,
-    checks: result.checks || [], info: result.info || {}, screenshots: shotFiles };
+    checks: result.checks || [], info: result.info || {}, screenshots: shotFiles, pdfs: pdfFiles };
   fs.writeFileSync(path.join(outDir, `${label}-result.json`), JSON.stringify(json, null, 2));
   const lines = (result.checks || []).map((c) => `${c.ok ? 'PASS' : 'FAIL'}  ${c.name}`);
   const failed = (result.checks || []).filter((c) => !c.ok).length;

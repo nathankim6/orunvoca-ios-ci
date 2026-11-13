@@ -10,6 +10,7 @@ async function probe(electron, opts) {
   const started = Date.now();
   const checks = [];
   const shots = {};
+  const pdfs = {};
   const info = { label: opts.label, platform: process.platform, arch: process.arch,
     electron: process.versions.electron, chrome: process.versions.chrome, steps: [] };
   const check = (name, ok, detail) => { checks.push({ name, ok: !!ok, detail }); return !!ok; };
@@ -44,7 +45,7 @@ async function probe(electron, opts) {
   }
 
   const finish = () => ({
-    ok: checks.length > 0 && checks.every((c) => c.ok), checks, shots,
+    ok: checks.length > 0 && checks.every((c) => c.ok), checks, shots, pdfs,
     info: { ...info, requestCounts: { ...store.counts }, blockedNonFixtureRequests: store.blocked.slice(0, 50),
       elapsedMs: Date.now() - started }
   });
@@ -182,9 +183,15 @@ async function probe(electron, opts) {
     await sleep(1500);
     const sNav = await pageState();
     check('navigation to a non-allowlisted origin is blocked in-app', rwc.getURL().startsWith(origin + '/') && sNav.loadId === base.loadId, { url: rwc.getURL() });
-    const pop = await rwc.executeJavaScript("window.__fixture.tryPopup('http://example.invalid/')", true);
+    // Unrelated popups stay denied: off-site, same-site page URL, about:blank variant. (http targets only:
+    // no external browser launch on the runner.)
+    const unrelated = {};
+    for (const u of ['http://example.invalid/', origin + '/other-page', 'about:blank#x']) {
+      unrelated[u] = await rwc.executeJavaScript(`window.__fixture.tryPopup(${JSON.stringify(u)})`, true);
+    }
     await sleep(500);
-    check('window.open is denied and creates no window', pop === 'null' && BaseWindow.getAllWindows().length === 1, { pop, windows: BaseWindow.getAllWindows().length });
+    check('unrelated window.open requests are denied and create no window',
+      Object.values(unrelated).every((v) => v === 'null') && BaseWindow.getAllWindows().length === 1, { unrelated, windows: BaseWindow.getAllWindows().length });
     const perm = await rwc.executeJavaScript('window.__fixture.notificationPermission()', true);
     check('permission requests are denied (notifications)', perm === 'denied', { perm });
 
@@ -194,6 +201,59 @@ async function probe(electron, opts) {
     check('synthetic pronunciation clip fetched from fixture and decoded', audio.fetched && audio.decoded && (store.counts[opts.wavPath] || 0) >= 1, audio);
     info.audioPlaybackInformational = audio.play; // hosted VM may lack an audio endpoint: informational only
     await sleep(300); await shot('desktop-after-audio', rwc);
+
+    // Site test-paper print flow: window.open('', '_blank') + document.write + print()/close().
+    // print() itself opens the OS print dialog, so the popup is rendered with printToPDF instead.
+    const winCount = () => BaseWindow.getAllWindows().length;
+    const others = () => BaseWindow.getAllWindows().filter((w) => w !== win);
+    const pop1 = await rwc.executeJavaScript('window.__fixture.openPrintPopup()', true);
+    const child = await waitFor(() => others()[0], 5000);
+    info.printPopup = { opener: pop1 };
+    check('print popup: window.open("", "_blank") from the trusted page opens exactly one popup window',
+      pop1.opened === true && !!child && winCount() === 2, { pop1, windows: winCount() });
+    if (child) {
+      const cwc = child.webContents;
+      const prefs = (cwc.getLastWebPreferences && cwc.getLastWebPreferences()) || {};
+      const cOrigin = cwc.mainFrame ? cwc.mainFrame.origin : undefined;
+      info.printPopup.child = { url: cwc.getURL(), origin: cOrigin, title: child.getTitle(),
+        prefs: { sandbox: prefs.sandbox, contextIsolation: prefs.contextIsolation, nodeIntegration: prefs.nodeIntegration,
+          nodeIntegrationInSubFrames: prefs.nodeIntegrationInSubFrames, webSecurity: prefs.webSecurity, preload: prefs.preload || null } };
+      check('print popup: about:blank document with the inherited trusted origin',
+        /^(about:blank)?$/.test(cwc.getURL()) && cOrigin === origin && pop1.childOrigin === origin, info.printPopup.child);
+      check('print popup: opener has same-origin DOM access to the document.write test paper', pop1.sameOriginAccess === true, pop1);
+      check('print popup: sandbox + contextIsolation on, nodeIntegration off, no preload',
+        prefs.sandbox === true && prefs.contextIsolation === true && prefs.nodeIntegration === false &&
+        prefs.nodeIntegrationInSubFrames !== true && !prefs.preload && prefs.webSecurity !== false, info.printPopup.child.prefs);
+      check('print popup: no Node or shell bridge globals in the popup',
+        pop1.childHasRequire === 'undefined' && pop1.childHasProcess === 'undefined' && pop1.childHasBridge === 'undefined', pop1);
+      check('print popup: uses the trusted session (same deny-all permission policy)', cwc.session === ses0);
+      const nested = await rwc.executeJavaScript('window.__fixture.printPopupNested()', true);
+      await sleep(300);
+      check('print popup: nested popups from the popup are denied', nested.blank === 'null' && nested.external === 'null' && winCount() === 2, nested);
+      await rwc.executeJavaScript("window.__fixture.printPopupNavigate('http://example.invalid/')");
+      await sleep(1500);
+      const still = await rwc.executeJavaScript('window.__fixture.printPopupState()');
+      check('print popup: popup and opener-initiated navigation away from the test paper is blocked',
+        !cwc.isDestroyed() && still.sameOriginAccess === true && /^(about:blank)?$/.test(cwc.getURL()), { url: cwc.getURL(), still });
+      const second = await rwc.executeJavaScript('window.__fixture.openSecondPrintPopup()', true);
+      await sleep(300);
+      check('print popup: a second concurrent popup is denied (limit 1)', second === 'null' && winCount() === 2, { second, windows: winCount() });
+      try {
+        const pdf = await cwc.printToPDF({ printBackground: true });
+        pdfs['print-popup'] = Buffer.from(pdf).toString('base64');
+        info.printPopup.pdfBytes = pdf.length;
+        check('print popup: Electron printToPDF of the popup yields a non-empty %PDF document (not a physical-printer test)',
+          pdf.length > 500 && Buffer.from(pdf).subarray(0, 5).toString('latin1') === '%PDF-', { bytes: pdf.length });
+      } catch (e) { check('print popup: Electron printToPDF of the popup', false, String(e)); }
+      await shot('print-popup', cwc);
+      await rwc.executeJavaScript('window.__fixture.closePrintPopup()');
+      check('print popup: close() from the opener closes it and releases the slot', await waitFor(() => winCount() === 1, 5000), { windows: winCount() });
+      const again = await rwc.executeJavaScript('window.__fixture.openPrintPopup()', true);
+      const child2 = await waitFor(() => others()[0], 5000);
+      check('print popup: a new print popup is allowed again after the previous one closed', again.opened === true && !!child2 && again.sameOriginAccess === true, again);
+      await rwc.executeJavaScript('window.__fixture.closePrintPopup()');
+      check('print popup: reopened popup closed, only the main window remains', await waitFor(() => winCount() === 1, 5000), { windows: winCount() });
+    }
 
     const sEnd = await pageState();
     check('end: same document and webContents after all checks', sEnd.loadId === base.loadId && rwc.id === base.wcId && (store.counts['/'] || 0) === base.docCount);

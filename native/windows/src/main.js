@@ -20,13 +20,37 @@ const rc = () => remoteView.webContents;
 function goBack() { const h = rc().navigationHistory; if (h.canGoBack()) h.goBack(); }
 function printPage() { rc().print({ printBackground: true }); }
 
+// Print popup: no preload, sandboxed, no nested popups, no navigation, no menu; released on close.
+// No timers: the user's print dialog is never closed by the shell.
+const printPopups = new Set();
+function hardenPrintPopup(child, details) {
+  const cwc = child.webContents;
+  const origin = cwc.mainFrame ? cwc.mainFrame.origin : '';
+  if (!sec.isTrustedPrintPopup(details && details.url, origin) || printPopups.size >= sec.PRINT_POPUP_LIMIT) {
+    child.destroy();
+    return;
+  }
+  printPopups.add(child);
+  child.once('closed', () => printPopups.delete(child));
+  child.removeMenu();
+  cwc.setWindowOpenHandler(() => ({ action: 'deny' }));
+  cwc.on('will-navigate', (e) => e.preventDefault());
+  cwc.on('will-redirect', (e) => e.preventDefault());
+  cwc.on('will-attach-webview', (e) => e.preventDefault());
+}
+
 function hardenRemote(wc, ses) {
   ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
   ses.setPermissionCheckHandler(() => false);
-  wc.setWindowOpenHandler(({ url }) => {
-    if (sec.isSafeExternal(url)) shell.openExternal(url);
+  wc.setWindowOpenHandler((details) => {
+    // Only the site's own print popup (about:blank, same origin, one at a time) opens in-app.
+    if (sec.isPrintPopupRequest(details, wc.getURL(), printPopups.size)) {
+      return { action: 'allow', overrideBrowserWindowOptions: sec.printPopupWindowOptions() };
+    }
+    if (sec.isSafeExternal(details.url)) shell.openExternal(details.url);
     return { action: 'deny' };
   });
+  wc.on('did-create-window', (child, details) => hardenPrintPopup(child, details));
   const guard = (e, url) => {
     if (sec.isAllowedNavigation(url)) return;
     e.preventDefault();

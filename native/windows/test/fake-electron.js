@@ -28,8 +28,11 @@ function createFakeElectron({ origin, wavPath, onSetBounds } = {}) {
   const ipcMain = new EventEmitter();
 
   class FakeWC extends EventEmitter {
-    constructor(ses, view) {
+    constructor(ses, view, prefs = {}) {
       super(); this.id = ++seq; this.session = ses; this.view = view; this.url = ''; this.doc = null; this.pid = 1000 + seq;
+      this.prefs = { ...prefs }; this.origin = '';
+      const self = this;
+      this.mainFrame = { get origin() { return self.origin || (self.url.startsWith('https:') ? new URL(self.url).origin : 'null'); } };
       this.navigationHistory = { canGoBack: () => false, goBack() {} };
     }
     loadFile(p) { this.url = 'file:///' + p.replace(/\\/g, '/').replace(/^\//, ''); this.isToolbar = /toolbar\.html$/.test(p); return Promise.resolve(); }
@@ -48,7 +51,19 @@ function createFakeElectron({ origin, wavPath, onSetBounds } = {}) {
     setWindowOpenHandler(fn) { this.openHandler = fn; }
     send(ch, m) { if (ch === 'shell:mode') this.toolbarMode = m; }
     print() {}
-    async capturePage() { return { toPNG: () => Buffer.from('fakepng'), getSize: () => ({ ...this.view.bounds }) }; }
+    getLastWebPreferences() { return { ...this.prefs }; }
+    async printToPDF() { return Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(1200, 32), Buffer.from(this.paper || '')]); }
+    // window.open() as Chromium/Electron would route it through setWindowOpenHandler + did-create-window.
+    windowOpen(url, disposition = 'foreground-tab') {
+      const details = { url, frameName: '', features: '', disposition, referrer: { url: this.url, policy: 'strict-origin-when-cross-origin' } };
+      const r = this.openHandler ? this.openHandler(details) : { action: 'allow' };
+      if (r.action !== 'allow') return null;
+      const child = new BrowserWindow(r.overrideBrowserWindowOptions || {}, this);
+      child.webContents.url = 'about:blank';
+      child.webContents.origin = this.mainFrame.origin; // about:blank inherits the creator's origin
+      this.emit('did-create-window', child, { ...details, options: r.overrideBrowserWindowOptions });
+      return child.destroyed ? null : child;
+    }    async capturePage() { return { toPNG: () => Buffer.from('fakepng'), getSize: () => ({ ...this.view.bounds }) }; }
     async executeJavaScript(code) { return this.isToolbar ? this.toolbarExec(code) : this.remoteExec(code); }
     toolbarExec(code) {
       if (code.includes('querySelectorAll')) {
@@ -78,8 +93,39 @@ function createFakeElectron({ origin, wavPath, onSetBounds } = {}) {
         if (!ev.prevented) { this.url = m[1]; this.doc = { loadId: 'NAV' }; }
         return true;
       }
-      m = code.match(/tryPopup\('([^']+)'\)/);
-      if (m) return this.openHandler({ url: m[1] }).action === 'deny' ? 'null' : '[object Window]';
+      m = code.match(/tryPopup\(["']([^"']+)["']\)/);
+      if (m) return this.windowOpen(m[1]) ? '[object Window]' : 'null';
+      const pw = this.printWin;
+      const pstate = () => {
+        const w = this.printWin; const wc = w && w.webContents;
+        const ok = !!w && !w.destroyed && wc.url === 'about:blank' && wc.mainFrame.origin === new URL(this.url).origin;
+        return { opened: !!w, closed: w ? w.destroyed : null, childOrigin: ok ? wc.mainFrame.origin : undefined, childHref: wc && wc.url,
+          title: ok ? wc.title : undefined, sameOriginAccess: ok && /SYNTHETIC TEST PAPER/.test(wc.paper || ''),
+          childHasRequire: 'undefined', childHasProcess: wc && wc.prefs.nodeIntegration ? 'object' : 'undefined', childHasBridge: wc && wc.prefs.preload ? 'object' : 'undefined' };
+      };
+      if (code.includes('openPrintPopup()')) {
+        const w = this.windowOpen('about:blank');
+        if (!w) return { opened: false };
+        this.printWin = w; w.webContents.paper = 'SYNTHETIC TEST PAPER fake'; w.webContents.title = 'SYNTHETIC TEST PAPER - fake';
+        return pstate();
+      }
+      if (code.includes('printPopupState()')) return pstate();
+      if (code.includes('printPopupNested()')) {
+        const cwc = pw.webContents;
+        return { blank: cwc.windowOpen('about:blank') ? '[object Window]' : 'null', external: cwc.windowOpen('http://example.invalid/') ? '[object Window]' : 'null' };
+      }
+      m = code.match(/printPopupNavigate\('([^']+)'\)/);
+      if (m) {
+        const cwc = pw.webContents;
+        for (let i = 0; i < 2; i++) { // popup self-navigation, then opener-initiated
+          const ev = { prevented: false, preventDefault() { this.prevented = true; } };
+          cwc.emit('will-navigate', ev, m[1]);
+          if (!ev.prevented) { cwc.url = m[1]; cwc.paper = ''; cwc.origin = 'null'; }
+        }
+        return true;
+      }
+      if (code.includes('openSecondPrintPopup()')) return this.windowOpen('about:blank') ? '[object Window]' : 'null';
+      if (code.includes('closePrintPopup()')) { if (pw) pw.close(); this.printWin = null; return true; }
       if (code.includes('notificationPermission')) {
         return new Promise((r) => this.session.permReq(this, 'notifications', (ok) => r(ok ? 'granted' : 'denied')));
       }
@@ -95,7 +141,7 @@ function createFakeElectron({ origin, wavPath, onSetBounds } = {}) {
   class WebContentsView {
     constructor({ webPreferences }) {
       this.webPreferences = webPreferences; this.bounds = { x: 0, y: 0, width: 0, height: 0 };
-      this.webContents = new FakeWC(webPreferences.session || session.defaultSession, this);
+      this.webContents = new FakeWC(webPreferences.session || session.defaultSession, this, webPreferences);
     }
     setBounds(b) { this.bounds = { ...b }; if (onSetBounds) onSetBounds(this, b); }
     getBounds() { return { ...this.bounds }; }
@@ -107,10 +153,23 @@ function createFakeElectron({ origin, wavPath, onSetBounds } = {}) {
     setContentSize(w, h) { this.size = [w, h]; this.emit('resize'); }
     getTitle() { return this.o.title; }
   }
+  class BrowserWindow extends BaseWindow {
+    constructor(o, openerWc) {
+      super({ width: o.width || 800, height: o.height || 600, ...o });
+      const prefs = { ...(openerWc ? openerWc.prefs : {}), ...(o.webPreferences || {}) };
+      this.bounds = { x: 0, y: 0, width: this.size[0], height: this.size[1] };
+      this.webContents = new FakeWC(openerWc ? openerWc.session : session.defaultSession, this, prefs);
+      this.destroyed = false;
+    }
+    removeMenu() { this.menuRemoved = true; }
+    isDestroyed() { return this.destroyed; }
+    destroy() { if (this.destroyed) return; this.destroyed = true; windows.splice(windows.indexOf(this), 1); this.emit('closed'); }
+    close() { this.destroy(); }
+  }
   const toItems = (t) => ({ items: t.map((i) => ({ ...i, click: i.click || (() => {}), submenu: i.submenu ? toItems(i.submenu) : undefined })) });
   const Menu = { buildFromTemplate: toItems, setApplicationMenu: (m) => { appMenu = m; }, getApplicationMenu: () => appMenu };
   const app = { whenReady: () => readyPromise, on() {}, quit() {}, exit() {}, getPath: () => path.join(require('node:os').tmpdir(), 'fake-userdata') };
-  const electron = { app, BaseWindow, WebContentsView, Menu, session, ipcMain, shell: { openExternal: (u) => opened.push(u) } };
+  const electron = { app, BaseWindow, BrowserWindow, WebContentsView, Menu, session, ipcMain, shell: { openExternal: (u) => opened.push(u) } };
   return { electron, fireReady: () => resolveReady(), opened };
 }
 
