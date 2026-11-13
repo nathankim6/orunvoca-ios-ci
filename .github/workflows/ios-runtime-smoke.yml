@@ -3,31 +3,32 @@ name: iOS runtime smoke
 # the app is compiled with the test-only QA_SMOKE flag. Never signed, archived or submitted.
 on:
   workflow_dispatch:
+    inputs:
+      device:
+        description: Simulator family to run (all re-runs both; pick one to retry only that leg)
+        type: choice
+        options: [all, iphone, ipad]
+        default: all
+        required: false
 permissions:
   contents: read
 jobs:
   runtime-smoke:
     name: Simulator runtime QA_SMOKE (${{ matrix.device }})
-    runs-on: ${{ matrix.runner }}
+    # Pinned per-device mappings (unchanged):
+    #   iphone: macos-15-intel, Xcode 26.3, iOS 26.2 (cold launch is intermittently unresponsive
+    #           on the 7GB arm64 host; the standard Intel image has Xcode 26.3 and iOS 26.2).
+    #   ipad:   macos-latest, default Xcode, iOS 26.4.
+    runs-on: ${{ matrix.device == 'iphone' && 'macos-15-intel' || 'macos-latest' }}
     timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # iPhone cold launch is intermittently unresponsive on the 7GB arm64 host.
-          # The official standard Intel image has Xcode 26.3 and iOS 26.2 installed.
-          - device: iphone
-            runner: macos-15-intel
-            developer: /Applications/Xcode_26.3.app/Contents/Developer
-            runtime: com.apple.CoreSimulator.SimRuntime.iOS-26-2
-          # Keep the independently passing iPad configuration unchanged.
-          - device: ipad
-            runner: macos-latest
-            developer: /Applications/Xcode.app/Contents/Developer
-            runtime: com.apple.CoreSimulator.SimRuntime.iOS-26-4
+        # Unknown/empty input falls back to both legs; never silently runs zero jobs.
+        device: ${{ fromJSON(inputs.device == 'iphone' && '["iphone"]' || inputs.device == 'ipad' && '["ipad"]' || '["iphone","ipad"]') }}
     env:
-      DEVELOPER_DIR: ${{ matrix.developer }}
-      SMOKE_RUNTIME_IDENTIFIER: ${{ matrix.runtime }}
+      DEVELOPER_DIR: ${{ matrix.device == 'iphone' && '/Applications/Xcode_26.3.app/Contents/Developer' || '/Applications/Xcode.app/Contents/Developer' }}
+      SMOKE_RUNTIME_IDENTIFIER: ${{ matrix.device == 'iphone' && 'com.apple.CoreSimulator.SimRuntime.iOS-26-2' || 'com.apple.CoreSimulator.SimRuntime.iOS-26-4' }}
       SMOKE_PREPARE_FOR_XCTEST: "1"
       SMOKE_DEVICE_FAMILY: ${{ matrix.device }}
       SMOKE_OUTPUT_DIR: runtime-smoke/${{ matrix.device }}

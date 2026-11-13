@@ -1,6 +1,6 @@
 'use strict';
 // TEST-ONLY runtime probe. Not packed (outside build.files).
-// `probe` MUST stay self-contained (no closure references): Playwright serializes it with
+// `probe` MUST stay self-contained (no closure references): installed-app-driver.js serializes it with
 // fn.toString() to run inside the main process of the INSTALLED app, and the source harness
 // calls it directly. It only inspects the real shell; it adds no hooks to the shipped app.
 async function probe(electron, opts) {

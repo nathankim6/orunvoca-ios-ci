@@ -22,9 +22,12 @@ final class RuntimeSmokeTests: XCTestCase {
     }
 
     private func webText(_ app: XCUIApplication, matching regex: String) -> XCUIElement {
-        app.webViews.firstMatch.descendants(matching: .any)
+        // Static text only: QA buttons share the "QA ..." prefix and must not be reported as status.
+        app.webViews.firstMatch.staticTexts
             .matching(NSPredicate(format: "label MATCHES %@", regex)).firstMatch
     }
+
+    private func label(_ element: XCUIElement) -> String { element.exists ? element.label : "missing" }
 
     /// Waits for live public login-page content from the real WKWebView document.
     private func waitForOnlineLoginPage(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
@@ -42,14 +45,26 @@ final class RuntimeSmokeTests: XCTestCase {
         if !ok {
             let actual = webText(app, matching: any)
             capture("qa-\(id)-failed"); attachHierarchy(app, "qa-\(id)-failed")
-            XCTFail("Expected \(id) /\(pass)/; actual: \(actual.exists ? actual.label : "missing")", file: file, line: line)
+            XCTFail("Expected \(id) /\(pass)/; actual: \(label(actual)); \(label(webText(app, matching: "QA events.*")))", file: file, line: line)
         }
     }
 
-    private func tapWebButton(_ app: XCUIApplication, _ label: String, file: StaticString = #filePath, line: UInt = #line) {
-        let button = app.webViews.firstMatch.buttons[label]
-        XCTAssertTrue(button.waitForExistence(timeout: 10), "Missing QA button \(label)", file: file, line: line)
-        button.tap() // Real synthesized touch: WebKit dispatches isTrusted pointer/click events.
+    /// Real synthesized touch: WebKit dispatches isTrusted pointer/click events. The DOM handler sets a
+    /// non-idle status synchronously before any native call, so one retry is made ONLY while the status is
+    /// still exactly idle (the page never received the click). Native results are never retried.
+    private func tapWebButton(_ app: XCUIApplication, _ title: String, idle: String, file: StaticString = #filePath, line: UInt = #line) {
+        let button = app.webViews.firstMatch.buttons[title]
+        XCTAssertTrue(button.waitForExistence(timeout: 10), "Missing QA button \(title)", file: file, line: line)
+        let idleStatus = webText(app, matching: idle)
+        for attempt in 1...2 {
+            button.tap()
+            let left = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: idleStatus)
+            if XCTWaiter.wait(for: [left], timeout: 5) == .completed { return }
+            let trace = XCTAttachment(string: "\(title) attempt \(attempt): status still '\(idle)'; \(label(webText(app, matching: "QA events.*")))")
+            trace.name = "\(devicePrefix)-qa-tap-not-delivered-\(attempt)"; trace.lifetime = .keepAlways; add(trace)
+            capture("qa-tap-not-delivered-\(attempt)")
+        }
+        XCTFail("Tap on \(title) never reached the page DOM handler: \(label(webText(app, matching: "QA events.*")))", file: file, line: line)
     }
 
     func testOnlineLaunchWithoutNotebookOrTabs() throws {
@@ -63,7 +78,8 @@ final class RuntimeSmokeTests: XCTestCase {
                            "Removed notebook UI is present: \(removed)")
         }
         // Without --qa-pronunciation even the QA build must not inject the test fixture.
-        XCTAssertFalse(webText(app, matching: "QA SMOKE.*").exists, "QA fixture must require the explicit launch argument")
+        XCTAssertFalse(app.webViews.firstMatch.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "QA ")).firstMatch.exists,
+                       "QA fixture must require the explicit launch argument")
         capture("online-login-no-tabs")
     }
 
@@ -80,16 +96,16 @@ final class RuntimeSmokeTests: XCTestCase {
         expectStatus(app, id: "gate", pass: "QA no-gesture rejected: Not allowed", any: "QA (gate|no-gesture).*", timeout: 20)
         capture("qa-ready-gate-rejected")
 
-        tapWebButton(app, "QA speak hello")
+        tapWebButton(app, "QA speak hello", idle: "QA speak idle")
         // "finished" is only produced by AVSpeechSynthesizer's real didFinish delegate.
         expectStatus(app, id: "speak", pass: "QA finished: finished in [0-9]+ms, trusted click true", any: "QA (speak|finished).*", timeout: 45)
         capture("qa-speak-finished")
 
-        tapWebButton(app, "QA invalid language")
+        tapWebButton(app, "QA invalid language", idle: "QA invalid idle")
         expectStatus(app, id: "invalid", pass: "QA invalid rejected: Invalid pronunciation request", any: "QA invalid.*", timeout: 15)
         capture("qa-invalid-rejected")
 
-        tapWebButton(app, "QA cancel speech")
+        tapWebButton(app, "QA cancel speech", idle: "QA cancel idle")
         expectStatus(app, id: "cancel", pass: "QA cancel: speak rejected Pronunciation cancelled; stop stopped", any: "QA cancel.*", timeout: 20)
         capture("qa-cancelled")
     }

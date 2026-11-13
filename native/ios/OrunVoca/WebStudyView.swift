@@ -192,6 +192,12 @@ private let qaPronunciationScript = #"""
   const speak = line('orun-qa-speak', 'QA speak idle');
   const invalid = line('orun-qa-invalid', 'QA invalid idle');
   const cancel = line('orun-qa-cancel', 'QA cancel idle');
+  // Diagnostic only: which real input events reached the panel (never changes pass criteria).
+  const events = line('orun-qa-events', 'QA events none');
+  const seen = [];
+  for (const type of ['touchstart', 'touchend', 'pointerdown', 'pointerup', 'mousedown', 'click']) box.addEventListener(type, e => {
+    seen.push(type + (e.isTrusted ? '' : '(untrusted)')); events.textContent = 'QA events ' + seen.slice(-12).join(',');
+  }, true);
   const reason = e => String((e && e.message) || e);
   const button = (label, run) => {
     const b = document.createElement('button'); b.type = 'button'; b.textContent = label;

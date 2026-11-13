@@ -1,7 +1,7 @@
 # TEST-ONLY (pwsh 7, GitHub-hosted windows runner VM). Not packed into the app.
 # Silent per-user NSIS install into a temp dir -> verify files/registry/shortcuts -> asar content check
 # -> plain launch of the installed exe (network-blocked) + desktop screenshot (visual only)
-# -> Playwright probe of the installed exe (assertions) -> source harness against installed app.asar
+# -> inspector-driven probe of the installed exe (assertions) -> source harness against installed app.asar
 # -> silent uninstall -> verify clean removal. Uninstall is attempted even when a step fails.
 param(
   [Parameter(Mandatory = $true)][string]$Installer,
@@ -89,11 +89,19 @@ try {
   Check "plain launch: top-level window titled $ProductName exists" ($main -and $main.MainWindowTitle -eq $ProductName) $facts.plainLaunch
   $facts.plainLaunch.screenshot = ScreenShot (Join-Path $Evidence 'VISUAL-ONLY-installed-plain-launch-screen.png')
   AppProcs | Stop-Process -Force -ErrorAction SilentlyContinue
-  Start-Sleep -Seconds 3
+  # Do not start the probe while any process of the force-killed plain launch is still alive,
+  # and do not let the probe inherit that launch's default profile.
+  $deadline = (Get-Date).AddSeconds(30)
+  while (@(AppProcs).Count -gt 0 -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500; AppProcs | Stop-Process -Force -ErrorAction SilentlyContinue }
+  $facts.leftoverProcessesBeforeProbe = @(AppProcs).Count
+  Check 'plain launch processes fully exited before the installed-exe probe' ($facts.leftoverProcessesBeforeProbe -eq 0) $facts.leftoverProcessesBeforeProbe
+  $plainProfile = Join-Path $env:APPDATA $ProductName
+  if (Test-Path $plainProfile) { Remove-Item -Recurse -Force $plainProfile -ErrorAction SilentlyContinue }
 
-  # 4) Assertions on the INSTALLED exe via Playwright (synthetic fixture on trusted origin, network blocked).
+  # 4) Assertions on the INSTALLED exe through its main-process Node inspector (synthetic fixture on the
+  #    trusted origin, network blocked, fresh --user-data-dir, one retry for launch/attach failures only).
   & node (Join-Path $AppRoot 'smoke\installed-app.js') $Exe $Evidence
-  Check 'installed exe: Playwright runtime probe passed (see installed-exe-summary.txt)' ($LASTEXITCODE -eq 0) $LASTEXITCODE
+  Check 'installed exe: inspector-driven runtime probe passed (see installed-exe-summary.txt)' ($LASTEXITCODE -eq 0) $LASTEXITCODE
   AppProcs | Stop-Process -Force -ErrorAction SilentlyContinue
 
   # 5) Same probe via the dev Electron binary against the installed app.asar main (cross-check).

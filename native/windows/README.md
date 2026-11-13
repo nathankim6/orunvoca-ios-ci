@@ -23,12 +23,14 @@ contextIsolation, sandbox, webSecurity, nodeIntegration 끔. 원격 콘텐츠에
 - `smoke/harness-main.js`: 개발용 Electron으로 **수정되지 않은** `src/main.js`(또는 설치된 app.asar의 main)를 실행. 실행 전에 같은 세션에
   `protocol.handle('https')` 라우터를 등록해 운영 origin(`https://orunvoca.co.kr`)에서만 합성 fixture(`smoke/fixture.js`, 빨간 "SYNTHETIC" 배너,
   가짜 발음 WAV)를 제공하고 그 외 https는 403. 실제 사이트/계정에 접속하지 않습니다.
-- `smoke/installed-app.js`: 설치된 exe를 Playwright(`playwright-core` `_electron`, executablePath)로 실행. `--proxy-server=127.0.0.1:9`,
-  `--host-resolver-rules=MAP * ~NOTFOUND` 로 네트워크를 막은 뒤 같은 probe를 실행.
+- `smoke/installed-app.js` + `smoke/installed-app-driver.js`: 설치된 exe를 `--inspect=0`으로 실행하고 메인 프로세스 Node inspector에만 직접 연결해 같은 probe를 실행
+  (렌더러/CDP attach 없음. 이전 Playwright `_electron.launch`는 CDP 연결 후 90초 멈춤 발생). 시도마다 새 `--user-data-dir`, 실패한 시도는 프로세스 트리 종료,
+  재시도는 실행/연결 인프라 실패에 한해 1회만. probe가 시작된 뒤의 실패는 재시도하지 않음. 네트워크는 `--proxy-server=127.0.0.1:9`,
+  `--host-resolver-rules=MAP * ~NOTFOUND` 로 차단.
 - `smoke/probe.js` 검사: 창 1개/뷰 2개, 데스크톱 전체 폭, 휴대폰 실제 390px(innerWidth, media query), 툴바/메뉴/창 크기 변경 후에도
   같은 webContents id/렌더러 pid/세션, 문서 재로드 없음, 노트/사이드바 없음, 원격 페이지 Node/브리지 없음, 탐색/팝업/권한 차단, 합성 오디오 fetch+decode.
 - `smoke/windows-installer-smoke.ps1`: 무인 설치(`/S /currentuser /D=`) → 파일/레지스트리/바로가기 확인 → 일반 실행+화면 캡처(시각 참고용) →
-  Playwright 검사 → 설치된 asar 교차 검사 → 무인 제거 → 깨끗한 제거 확인.
+  inspector probe → 설치된 asar 교차 검사 → 무인 제거 → 깨끗한 제거 확인.
 
 ## 명령
 ```

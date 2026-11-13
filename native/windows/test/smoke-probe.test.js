@@ -64,7 +64,7 @@ test('router serves only the trusted origin; other https requests get 403', asyn
   assert.strictEqual((await h(new Request('https://orunvoca.co.kr/missing'))).status, 404);
 });
 
-test('probe is self-contained (survives Playwright-style fn.toString() serialization in a fresh context)', async () => {
+test('probe is self-contained (survives fn.toString() serialization used by the installed-app inspector driver in a fresh context)', async () => {
   const vm = require('node:vm');
   const sandbox = { setTimeout, Buffer, Response, Request, URL, process, JSON, Math, Date, Promise, Error, String, Object, Array };
   sandbox.globalThis = sandbox;
