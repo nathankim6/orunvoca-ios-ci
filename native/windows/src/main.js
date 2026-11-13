@@ -11,7 +11,7 @@ function applyLayout() {
   if (!win || !remoteView) return;
   const [w, h] = win.getContentSize();
   toolbarView.setBounds(layout.computeToolbarBounds(w));
-  // Same remote webContents; only its bounds change (real width, no CSS transform).
+  // Same remote webContents in every mode (desktop/tablet/phone); only its bounds change (real width, no CSS transform).
   remoteView.setBounds(layout.computeRemoteBounds(mode, w, h));
   toolbarView.webContents.send('shell:mode', mode);
 }
@@ -75,7 +75,8 @@ function buildMenu() {
       { label: '종료', role: 'quit' } ] },
     { label: '보기', submenu: [
       { label: '데스크톱 모드', accelerator: 'CmdOrCtrl+1', click: () => setMode('desktop') },
-      { label: '휴대폰 모드', accelerator: 'CmdOrCtrl+2', click: () => setMode('phone') } ] }
+      { label: '태블릿 모드', accelerator: 'CmdOrCtrl+2', click: () => setMode('tablet') },
+      { label: '휴대폰 모드', accelerator: 'CmdOrCtrl+3', click: () => setMode('phone') } ] }
   ]));
 }
 

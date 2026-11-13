@@ -1,10 +1,12 @@
 const $ = (id) => document.getElementById(id);
+const MODES = ['desktop', 'tablet', 'phone'];
 $('back').onclick = () => orunShell.back();
 $('reload').onclick = () => orunShell.reload();
 $('print').onclick = () => orunShell.print();
-$('desktop').onclick = () => orunShell.setMode('desktop');
-$('phone').onclick = () => orunShell.setMode('phone');
-orunShell.onMode((m) => {
-  $('desktop').classList.toggle('on', m === 'desktop');
-  $('phone').classList.toggle('on', m === 'phone');
+for (const m of MODES) $(m).onclick = () => orunShell.setMode(m);
+orunShell.onMode((mode) => {
+  for (const m of MODES) {
+    $(m).classList.toggle('on', m === mode);
+    $(m).setAttribute('aria-pressed', String(m === mode));
+  }
 });

@@ -52,9 +52,14 @@ async function probe(electron, opts) {
 
   try {
     const TB_STATE = `(() => { const q = (s) => Array.from(document.querySelectorAll(s));
+      const vw = document.documentElement.clientWidth;
+      const rects = q('button').map((b) => { const r = b.getBoundingClientRect(); return { id: b.id, left: r.left, right: r.right, width: r.width }; });
       return { ids: q('button').map((b) => b.id), on: q('button.on').map((b) => b.id),
         suspicious: q('[id*="sidebar" i],[class*="sidebar" i],[id*="notebook" i],[class*="notebook" i],[id*="note" i],[class*="note" i]').length,
-        text: document.body.innerText }; })()`;
+        text: document.body.innerText, viewportWidth: vw, scrollWidth: document.documentElement.scrollWidth,
+        outside: rects.filter((r) => !(r.width > 0 && r.left >= 0 && r.right <= vw + 0.5)).map((r) => r.id),
+        clipped: q('button').filter((b) => b.scrollWidth > b.clientWidth + 1).map((b) => b.id),
+        names: q('button').map((b) => ({ id: b.id, label: (b.getAttribute('aria-label') || b.innerText || '').trim(), title: b.title || '' })) }; })()`;
     const tbClick = (id) => `document.getElementById(${JSON.stringify(id)}).click(); true`;
 
     const win = await waitFor(() => BaseWindow.getAllWindows()[0], 30000);
@@ -92,7 +97,8 @@ async function probe(electron, opts) {
     const contentSize = () => { const [w, h] = win.getContentSize(); return { w, h }; };
     const expected = (mode) => { // independent oracle (does not reuse src/layout.js)
       const { w, h } = contentSize(); const y = 40; const height = Math.max(0, h - y);
-      if (mode === 'phone') { const width = Math.min(390, w); return { x: Math.floor((w - width) / 2), y, width, height }; }
+      const limit = { tablet: 768, phone: 390 }[mode];
+      if (limit) { const width = Math.min(limit, w); return { x: Math.floor((w - width) / 2), y, width, height }; }
       return { x: 0, y, width: w, height };
     };
     const sameRect = (a, b) => a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
@@ -114,8 +120,13 @@ async function probe(electron, opts) {
     info.base = base;
     info.initialContentSize = contentSize();
     check('desktop content width is wider than the phone width (toggle is meaningful)', contentSize().w > 400, contentSize());
+    check('desktop content width is wider than the tablet width (tablet differs from desktop)', contentSize().w > 768, contentSize());
 
+    let prevMode = null;
+    info.transitions = [];
     const verify = async (step, mode) => {
+      if (prevMode && prevMode !== mode) info.transitions.push(prevMode + '>' + mode);
+      prevMode = mode;
       const exp = expected(mode);
       const bOk = await waitFor(() => sameRect(remote.getBounds(), expected(mode)), 5000);
       const st = (await waitFor(async () => { const s = await pageState(); return Math.abs(s.innerWidth - expected(mode).width) <= 1 ? s : null; }, 5000)) || await pageState();
@@ -140,27 +151,74 @@ async function probe(electron, opts) {
       return null;
     };
     const menuClick = (label) => { const it = menuItem(label); if (!it) throw new Error('menu item missing: ' + label); it.click(); };
+    const viewItems = () => { const m = Menu.getApplicationMenu(); const v = m && m.items.find((i) => i.label === '보기'); return v && v.submenu ? v.submenu.items : []; };
+    const modeMenu = viewItems().map((i) => ({ label: i.label, accelerator: i.accelerator }));
+    info.modeMenu = modeMenu;
+    check('보기 menu is exactly 데스크톱 모드 (Ctrl+1), 태블릿 모드 (Ctrl+2), 휴대폰 모드 (Ctrl+3) in that order',
+      JSON.stringify(modeMenu) === JSON.stringify([{ label: '데스크톱 모드', accelerator: 'CmdOrCtrl+1' },
+        { label: '태블릿 모드', accelerator: 'CmdOrCtrl+2' }, { label: '휴대폰 모드', accelerator: 'CmdOrCtrl+3' }]), modeMenu);
+    const toolbarFits = (step, t) => check(`${step}: toolbar fits (no overflow, no clipped button text, every button visible)`,
+      t.scrollWidth <= t.viewportWidth && t.outside.length === 0 && t.clipped.length === 0 && t.ids.length === 6,
+      { viewportWidth: t.viewportWidth, scrollWidth: t.scrollWidth, outside: t.outside, clipped: t.clipped, ids: t.ids });
 
+    // Sequence covers all six transitions between 데스크톱/태블릿/휴대폰 via toolbar and menu (Ctrl+1/2/3),
+    // tablet 768 vs phone 390, narrow-window clamping and the minimum window width; always the same document.
     await verify('1 initial', 'desktop');
     await sleep(300); await shot('desktop-remote', rwc); await shot('toolbar-desktop', twc); await windowShot('window-desktop');
+    toolbarFits('1 initial', await tbState());
+
+    await twc.executeJavaScript(tbClick('tablet'));
+    await verify('2 toolbar 태블릿', 'tablet');
+    await sleep(300); await shot('tablet-remote', rwc); await shot('toolbar-tablet', twc); await windowShot('window-tablet');
 
     await twc.executeJavaScript(tbClick('phone'));
-    await verify('2 toolbar 휴대폰', 'phone');
+    await verify('3 toolbar 휴대폰', 'phone');
     await sleep(300); await shot('phone-remote', rwc); await shot('toolbar-phone', twc); await windowShot('window-phone');
 
     menuClick('데스크톱 모드');
-    await verify('3 menu 데스크톱 모드 (Ctrl+1)', 'desktop');
+    await verify('4 menu 데스크톱 모드 (Ctrl+1)', 'desktop');
+    menuClick('태블릿 모드');
+    await verify('5 menu 태블릿 모드 (Ctrl+2)', 'tablet');
     menuClick('휴대폰 모드');
-    await verify('4 menu 휴대폰 모드 (Ctrl+2)', 'phone');
+    await verify('6 menu 휴대폰 모드 (Ctrl+3)', 'phone');
 
     const before = contentSize();
     win.setContentSize(Math.max(520, before.w - 160), before.h);
     await sleep(300);
-    await verify('5 window resized while in phone mode', 'phone');
+    await verify('7 window resized while in phone mode', 'phone');
+    win.setContentSize(Math.min(700, before.w), before.h);
+    await sleep(300);
+    await twc.executeJavaScript(tbClick('tablet'));
+    await verify('8 toolbar 태블릿 in a window narrower than 768 (clamps to available width)', 'tablet');
+    check('8: narrow tablet fills the available width', contentSize().w < 768 && remote.getBounds().width === contentSize().w, { content: contentSize(), bounds: remote.getBounds() });
+    menuClick('데스크톱 모드');
+    await verify('9 menu 데스크톱 모드 in a narrow window', 'desktop');
+    menuClick('휴대폰 모드');
+    await verify('10 menu 휴대폰 모드 in a narrow window', 'phone');
+
+    // Narrowest allowed window (BaseWindow minWidth): toolbar with all six buttons must still fit.
+    const [minW] = win.getMinimumSize(); const [, outerH] = win.getSize();
+    win.setSize(minW, outerH);
+    await sleep(300);
+    info.minimumContentSize = contentSize();
+    await verify('11 minimum window width in phone mode', 'phone');
+    check('11: minimum window content is narrower than tablet but wider than phone', contentSize().w < 768 && contentSize().w >= 390, contentSize());
+    const tMin = (await waitFor(async () => { const s = await tbState(); return s.viewportWidth === contentSize().w ? s : null; }, 5000)) || await tbState();
+    info.toolbarAtMinimum = tMin;
+    toolbarFits('11 minimum width', tMin);
+    check('11: every toolbar button keeps an accessible name and tooltip',
+      tMin.names.length === 6 && tMin.names.every((n) => n.label && n.title), tMin.names);
+    await shot('toolbar-minimum', twc); await windowShot('window-minimum');
+    await twc.executeJavaScript(tbClick('tablet'));
+    await verify('12 toolbar 태블릿 at minimum width (clamped)', 'tablet');
+
     win.setContentSize(before.w, before.h);
     await sleep(300);
+    await verify('13 window restored while in tablet mode', 'tablet');
     await twc.executeJavaScript(tbClick('desktop'));
-    await verify('6 toolbar 데스크톱', 'desktop');
+    await verify('14 toolbar 데스크톱', 'desktop');
+    const needed = ['desktop>tablet', 'tablet>phone', 'phone>desktop', 'desktop>phone', 'phone>tablet', 'tablet>desktop'];
+    check('all six desktop/tablet/phone transitions exercised', needed.every((x) => info.transitions.includes(x)), info.transitions);
 
     // No sidebar / notebook anywhere in the shell UI.
     const labels = [];
@@ -172,8 +230,8 @@ async function probe(electron, opts) {
     check('no notebook/sidebar menu entries', !labels.some((l) => /노트|단어장|사이드|sidebar|notebook|note/i.test(l)), labels);
     const tf = await tbState();
     info.toolbar = tf;
-    check('toolbar has exactly back, reload, desktop, phone, print buttons and no sidebar/notebook elements',
-      JSON.stringify(tf.ids) === JSON.stringify(['back', 'reload', 'desktop', 'phone', 'print']) && tf.suspicious === 0 &&
+    check('toolbar has exactly back, reload, desktop, tablet, phone, print buttons and no sidebar/notebook elements',
+      JSON.stringify(tf.ids) === JSON.stringify(['back', 'reload', 'desktop', 'tablet', 'phone', 'print']) && tf.suspicious === 0 &&
       !/노트|단어장|사이드/.test(tf.text), tf);
 
     // Remote content isolation and navigation guard (no external browser launch: http targets only).

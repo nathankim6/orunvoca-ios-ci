@@ -6,7 +6,7 @@ const Module = require('node:module');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 
-function createFakeElectron({ origin, wavPath, onSetBounds } = {}) {
+function createFakeElectron({ origin, wavPath, onSetBounds, toolbarFitWidth = 300, toolbarNames = null } = {}) {
   let resolveReady;
   const readyPromise = new Promise((r) => { resolveReady = r; });
   const sessions = new Map();
@@ -67,12 +67,20 @@ function createFakeElectron({ origin, wavPath, onSetBounds } = {}) {
     async executeJavaScript(code) { return this.isToolbar ? this.toolbarExec(code) : this.remoteExec(code); }
     toolbarExec(code) {
       if (code.includes('querySelectorAll')) {
-        return { ids: ['back', 'reload', 'desktop', 'phone', 'print'], on: this.toolbarMode ? [this.toolbarMode] : [], suspicious: 0, text: '뒤로 새로고침 데스크톱 휴대폰 인쇄' };
+        // Simulated layout: the six buttons need `toolbarFitWidth` px; narrower views overflow on the right.
+        const vw = this.view.bounds.width;
+        const ids = ['back', 'reload', 'desktop', 'tablet', 'phone', 'print'];
+        const compact = vw <= 560;
+        const names = toolbarNames || [['back', '뒤로', '뒤로 (Alt+←)'], ['reload', '새로고침', '새로고침 (Ctrl+R)'], ['desktop', '데스크톱', '데스크톱 모드 (Ctrl+1)'],
+          ['tablet', '태블릿', '태블릿 모드 (Ctrl+2)'], ['phone', '휴대폰', '휴대폰 모드 (Ctrl+3)'], ['print', '인쇄', '인쇄 (Ctrl+P)']].map(([id, label, title]) => ({ id, label, title }));
+        return { ids, on: this.toolbarMode ? [this.toolbarMode] : [], suspicious: 0,
+          text: compact ? '데스크톱 태블릿 휴대폰' : '뒤로 새로고침 데스크톱 태블릿 휴대폰 인쇄',
+          viewportWidth: vw, scrollWidth: Math.max(vw, toolbarFitWidth), outside: vw < toolbarFitWidth ? ['print'] : [], clipped: [], names };
       }
       const m = code.match(/getElementById\("(\w+)"\)\.click\(\)/);
       if (m) {
         const e = { sender: this };
-        if (m[1] === 'phone' || m[1] === 'desktop') ipcMain.emit('shell:set-mode', e, m[1]);
+        if (m[1] === 'phone' || m[1] === 'tablet' || m[1] === 'desktop') ipcMain.emit('shell:set-mode', e, m[1]);
         else ipcMain.emit('shell:' + m[1], e);
         return true;
       }
@@ -151,6 +159,10 @@ function createFakeElectron({ origin, wavPath, onSetBounds } = {}) {
     static getAllWindows() { return windows.slice(); }
     getContentSize() { return this.size.slice(); }
     setContentSize(w, h) { this.size = [w, h]; this.emit('resize'); }
+    // Outer frame = content + 16 x 39 (Windows-like); setSize honors minWidth/minHeight like the real BaseWindow.
+    getMinimumSize() { return [this.o.minWidth || 0, this.o.minHeight || 0]; }
+    getSize() { return [this.size[0] + 16, this.size[1] + 39]; }
+    setSize(w, h) { const [mw, mh] = this.getMinimumSize(); this.size = [Math.max(w, mw) - 16, Math.max(h, mh) - 39]; this.emit('resize'); }
     getTitle() { return this.o.title; }
   }
   class BrowserWindow extends BaseWindow {

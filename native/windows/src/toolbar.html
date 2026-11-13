@@ -2,12 +2,29 @@
 <html lang="ko"><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'">
 <style>
-body{margin:0;height:40px;display:flex;align-items:center;gap:6px;padding:0 8px;background:#f3f4f6;font:13px 'Malgun Gothic',sans-serif;-webkit-user-select:none}
-button{height:28px;padding:0 10px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer}
-button.on{background:#2563eb;color:#fff;border-color:#2563eb}.sp{flex:1}
+html{overflow:hidden}
+body{margin:0;height:40px;display:flex;align-items:center;gap:6px;padding:0 8px;background:#f3f4f6;font:13px 'Malgun Gothic',sans-serif;-webkit-user-select:none;min-width:0}
+button{height:28px;padding:0 10px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer;white-space:nowrap;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;gap:4px;font:inherit;color:#111827}
+button.on{background:#2563eb;color:#fff;border-color:#2563eb}.sp{flex:1 1 0;min-width:0}
+.modes{display:flex;gap:4px;flex:0 0 auto}
+.ic{display:none;width:16px;height:16px;flex:0 0 auto}
+.ic svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+/* Narrow windows (minWidth 420): back/reload/print become icon-only (names stay in aria-label/title),
+   mode buttons keep their full Korean text with tighter padding so nothing overflows or truncates. */
+@media (max-width:560px){
+  body{gap:4px;padding:0 6px}
+  button{padding:0 7px}
+  button.cmp{width:30px;padding:0}
+  button.cmp .ic{display:inline-flex}
+  button.cmp .lb{display:none}
+}
 </style></head><body>
-<button id="back">뒤로</button><button id="reload">새로고침</button>
+<button id="back" class="cmp" aria-label="뒤로" title="뒤로 (Alt+←)"><span class="ic" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></svg></span><span class="lb">뒤로</span></button>
+<button id="reload" class="cmp" aria-label="새로고침" title="새로고침 (Ctrl+R)"><span class="ic" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.6"/><path d="M13 2.5v3h-3"/></svg></span><span class="lb">새로고침</span></button>
 <span class="sp"></span>
-<button id="desktop">데스크톱</button><button id="phone">휴대폰</button>
-<button id="print">인쇄</button>
+<span class="modes" role="group" aria-label="화면 모드">
+<button id="desktop" aria-pressed="false" title="데스크톱 모드 (Ctrl+1)">데스크톱</button><button id="tablet" aria-pressed="false" title="태블릿 모드 (Ctrl+2)">태블릿</button><button id="phone" aria-pressed="false" title="휴대폰 모드 (Ctrl+3)">휴대폰</button>
+</span>
+<span class="sp"></span>
+<button id="print" class="cmp" aria-label="인쇄" title="인쇄 (Ctrl+P)"><span class="ic" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4 6V2h8v4"/><rect x="2" y="6" width="12" height="5" rx="1"/><path d="M4 9h8v5H4z"/></svg></span><span class="lb">인쇄</span></button>
 <script src="toolbar.js"></script></body></html>

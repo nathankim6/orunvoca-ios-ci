@@ -42,7 +42,11 @@ const assert = (ok, message) => { if (!ok) throw Error(message); };
 assert(/액세스 코드|로그아웃|학습 시작|학생 로그인/.test(text), 'Online study page has not loaded');
 assert(!/오프라인 단어장|TSV 가져오기|TSV 내보내기|단어 추가/.test(text), 'Removed notebook UI is present');
 assert(!rows.some(r => !r.inWeb && (r.role === 'AXOutline' || /sidebar|사이드바/i.test(`${r.title || ''} ${r.description || ''}`))), 'Native sidebar is present');
-assert(text.includes('데스크톱') && text.includes('휴대폰'), 'Display-mode toolbar is missing');
+assert(text.includes('데스크톱') && text.includes('태블릿') && text.includes('휴대폰'), 'Display-mode toolbar is missing');
+// Native picker order must be 데스크톱, 태블릿, 휴대폰 (first native row whose title/value/description is exactly the label).
+const exactly = (r, l) => [r.title, r.value, r.description].some(v => typeof v === 'string' && v.trim() === l);
+const order = ['데스크톱', '태블릿', '휴대폰'].map(l => rows.findIndex(r => !r.inWeb && exactly(r, l)));
+assert(order.every(i => i >= 0) && order[0] < order[1] && order[1] < order[2], `Display-mode order must be 데스크톱/태블릿/휴대폰, got ${order}`);
 assert(!/QA SMOKE|QA no-gesture|QA speak/.test(text), 'Test-only QA fixture is present in a layout/production run');
 const web = rows.find(r => r.role === 'AXWebArea' && r.size && r.size[0] > 0);
 assert(web && window.size && window.position && web.position, 'Missing real web viewport geometry');
@@ -53,6 +57,15 @@ if (mode === 'phone') {
   const webCenter = web.position[0] + width / 2;
   const windowCenter = window.position[0] + window.size[0] / 2;
   assert(Math.abs(webCenter - windowCenter) <= 6, 'Phone web viewport is not centered');
+} else if (mode === 'tablet') {
+  // Real narrowed viewport: min(768, available window width), centered.
+  const tabletTarget = Math.min(768, window.size[0]);
+  assert(Math.abs(width - tabletTarget) <= 4, `Tablet web viewport should be ${tabletTarget}pt, got ${width}`);
+  const webCenter = web.position[0] + width / 2;
+  const windowCenter = window.position[0] + window.size[0] / 2;
+  assert(Math.abs(webCenter - windowCenter) <= 6, 'Tablet web viewport is not centered');
+} else if (mode !== 'desktop') {
+  throw Error(`Unknown display mode: ${mode}`);
 } else {
   assert(width >= window.size[0] - 12, `Desktop web viewport does not fill window: ${width}/${window.size[0]}`);
 }
@@ -79,7 +92,10 @@ if [ "$MODE_ARG" = "layout" ]; then
 check online desktop --section online
 check removed-section desktop --section offline
 check removed-info desktop --section info
+check tablet tablet --tablet-mode
 check phone phone --phone-mode
+# Legacy --phone-mode keeps precedence when both flags are present.
+check phone-over-tablet phone --tablet-mode --phone-mode
 # Production must ignore the test-only launch argument (no QA fixture is compiled in).
 check prod-ignores-qa-arg desktop --qa-pronunciation
 exit "$FAIL"
