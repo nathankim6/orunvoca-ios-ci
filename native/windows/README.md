@@ -1,0 +1,39 @@
+# 옳은VOCA Windows 셸 1.0.1 (unsigned, 배포 전 검증용)
+
+Electron 기반 Windows 데스크톱 셸. https://orunvoca.co.kr 를 원격 콘텐츠로 표시합니다.
+오프라인 노트와 앱 좌측 사이드바는 없습니다.
+
+## 상태
+- 설치파일: `dist/OrunVoca-Setup-1.0.1-x64-unsigned.exe` (NSIS x64, **코드 서명 없음**: 인증서 없음). Windows SmartScreen 경고가 표시될 수 있습니다.
+- 빌드/실행 검증은 수동 GitHub Actions 워크플로 `.github/workflows/windows-build.yml` (windows-latest **호스티드 VM**, 실제 사용자 기기 아님)에서 수행합니다. macOS 샌드박스에서는 7za 실행이 막혀 NSIS를 만들 수 없습니다.
+- 릴리스/배포/스토어 제출 없음. 워크플로는 artifact 업로드만 합니다. 배포는 사용자의 명시적 "완료" 이후에만.
+
+## 구조
+- 상단 컴팩트 툴바(로컬, 신뢰 UI) + 원격 WebContentsView 하나.
+- 데스크톱 모드: 원격 뷰가 창을 채움. 휴대폰 모드: 원격 뷰의 실제 폭 390px, 중앙 정렬 (CSS transform 아님).
+- 모드 전환은 같은 원격 webContents/세션(`persist:orunvoca`)을 유지하며 bounds만 변경 (새로고침 없음).
+
+## 보안
+contextIsolation, sandbox, webSecurity, nodeIntegration 끔. 원격 콘텐츠에는 preload/IPC 없음.
+탐색은 정확히 `https://orunvoca.co.kr` 만 허용. 안전한 외부 https 링크만 기본 브라우저로 열기, 팝업/기타 프로토콜 차단.
+모든 권한 요청 거부. 다운로드는 다운로드 폴더에 저장만 하고 자동 실행하지 않음.
+**테스트 훅 없음**: `src/`에는 테스트 URL/환경변수/플래그가 없고, 패키지에는 `src/**`와 `package.json`만 들어갑니다 (`smoke/check-asar.js`로 확인).
+
+## 스모크 테스트 (`smoke/`, 패키지에 포함되지 않음)
+- `smoke/harness-main.js`: 개발용 Electron으로 **수정되지 않은** `src/main.js`(또는 설치된 app.asar의 main)를 실행. 실행 전에 같은 세션에
+  `protocol.handle('https')` 라우터를 등록해 운영 origin(`https://orunvoca.co.kr`)에서만 합성 fixture(`smoke/fixture.js`, 빨간 "SYNTHETIC" 배너,
+  가짜 발음 WAV)를 제공하고 그 외 https는 403. 실제 사이트/계정에 접속하지 않습니다.
+- `smoke/installed-app.js`: 설치된 exe를 Playwright(`playwright-core` `_electron`, executablePath)로 실행. `--proxy-server=127.0.0.1:9`,
+  `--host-resolver-rules=MAP * ~NOTFOUND` 로 네트워크를 막은 뒤 같은 probe를 실행.
+- `smoke/probe.js` 검사: 창 1개/뷰 2개, 데스크톱 전체 폭, 휴대폰 실제 390px(innerWidth, media query), 툴바/메뉴/창 크기 변경 후에도
+  같은 webContents id/렌더러 pid/세션, 문서 재로드 없음, 노트/사이드바 없음, 원격 페이지 Node/브리지 없음, 탐색/팝업/권한 차단, 합성 오디오 fetch+decode.
+- `smoke/windows-installer-smoke.ps1`: 무인 설치(`/S /currentuser /D=`) → 파일/레지스트리/바로가기 확인 → 일반 실행+화면 캡처(시각 참고용) →
+  Playwright 검사 → 설치된 asar 교차 검사 → 무인 제거 → 깨끗한 제거 확인.
+
+## 명령
+```
+npm ci
+npm test              # Node 테스트 (레이아웃/보안/패키지 격리/실제 main.js+가짜 Electron probe)
+npm run smoke:source  # 실제 Electron 실행 스모크 (Windows 러너에서)
+npm run package:win   # NSIS x64, --publish never (Windows에서만)
+```

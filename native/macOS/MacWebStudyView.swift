@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import WebKit
+import AVFoundation
 import UniformTypeIdentifiers
 
 // macOS port of the iOS WebStudyView bridge. Self-contained: all types are Mac-prefixed.
@@ -119,6 +120,117 @@ private let macExportScript = #"""
 
 private let macPopupPrintScript = "window.print = function() { if (document.documentElement.outerHTML.length > 26214400) { window.webkit.messageHandlers.orunExport.postMessage({op:'error'}).catch(function() {}); return; } window.webkit.messageHandlers.orunExport.postMessage({op:'print'}).catch(function() {}); }; window.close = function() {};"
 
+#if QA_SMOKE
+// TEST-ONLY fixture. Compiled solely with -D QA_SMOKE (CI runtime smoke) and only
+// injected for the --qa-pronunciation launch argument into the trusted HTTPS main
+// frame. It adds a local panel; it never reads, fills, submits or stores site data.
+private let macQAPronunciationScript = #"""
+(() => {
+  if (window !== window.top || location.origin !== 'https://orunvoca.co.kr' || document.getElementById('orun-qa-smoke')) return true;
+  const bridge = window.webkit.messageHandlers.orunPronunciation;
+  const box = document.createElement('div');
+  box.id = 'orun-qa-smoke';
+  box.style.cssText = 'position:fixed;left:8px;right:8px;bottom:32px;z-index:2147483647;background:#fff3b0;color:#000;border:2px solid #9a6700;border-radius:8px;padding:8px;font:14px -apple-system,sans-serif;';
+  const line = (id, text) => { const p = document.createElement('p'); p.id = id; p.textContent = text; p.style.margin = '3px 0'; box.appendChild(p); return p; };
+  line('orun-qa-title', 'QA SMOKE test build only');
+  const gate = line('orun-qa-gate', 'QA gate pending');
+  const speak = line('orun-qa-speak', 'QA speak idle');
+  const invalid = line('orun-qa-invalid', 'QA invalid idle');
+  const cancel = line('orun-qa-cancel', 'QA cancel idle');
+  const reason = e => String((e && e.message) || e);
+  const button = (label, run) => {
+    const b = document.createElement('button'); b.type = 'button'; b.textContent = label;
+    b.style.cssText = 'margin:4px;padding:10px 14px;font:15px -apple-system,sans-serif;';
+    b.addEventListener('click', e => run(e.isTrusted)); box.appendChild(b);
+  };
+  button('QA speak hello', trusted => {
+    const started = performance.now(); speak.textContent = 'QA speak pending';
+    bridge.postMessage({text:'hello', lang:'en-US', rate:0.9}).then(r => {
+      speak.textContent = r && r.status === 'finished'
+        ? 'QA finished: finished in ' + Math.round(performance.now() - started) + 'ms, trusted click ' + trusted
+        : 'QA speak unexpected result ' + JSON.stringify(r);
+    }, e => { speak.textContent = 'QA speak failed: ' + reason(e); });
+  });
+  button('QA invalid language', () => {
+    invalid.textContent = 'QA invalid pending';
+    bridge.postMessage({text:'hello', lang:'fr-FR', rate:0.9}).then(
+      r => { invalid.textContent = 'QA invalid unexpectedly accepted ' + JSON.stringify(r); },
+      e => { invalid.textContent = 'QA invalid rejected: ' + reason(e); });
+  });
+  button('QA cancel speech', () => {
+    cancel.textContent = 'QA cancel pending';
+    const long = bridge.postMessage({text:'This deliberately long English sentence is cancelled by the native stop request before it can finish speaking.', lang:'en-US', rate:0.9});
+    const stop = new Promise(resolve => setTimeout(resolve, 400)).then(() => bridge.postMessage({op:'stop'}));
+    Promise.allSettled([long, stop]).then(([a, b]) => {
+      const first = a.status === 'rejected' ? 'rejected ' + reason(a.reason) : 'resolved ' + JSON.stringify(a.value);
+      const second = b.status === 'fulfilled' ? (b.value && b.value.status) : 'failed ' + reason(b.reason);
+      cancel.textContent = 'QA cancel: speak ' + first + '; stop ' + second;
+    });
+  });
+  document.body.appendChild(box);
+  // Negative gate check: no user gesture has occurred in this fresh launch, so native must reject.
+  bridge.postMessage({text:'hello', lang:'en-US', rate:0.9}).then(
+    r => { gate.textContent = 'QA no-gesture unexpectedly accepted ' + JSON.stringify(r); },
+    e => { gate.textContent = 'QA no-gesture rejected: ' + reason(e); });
+  return true;
+})();
+"""#
+#endif
+
+// Local-only English pronunciation. The synthesizer is retained for the session;
+// at most one utterance is pending and its reply is settled exactly once.
+@MainActor private final class MacPronunciationSpeaker: NSObject, AVSpeechSynthesizerDelegate {
+    private let synthesizer = AVSpeechSynthesizer()
+    private var current: AVSpeechUtterance?
+    private var pendingReply: ((Any?, String?) -> Void)?
+    override init() { super.init(); synthesizer.delegate = self }
+    private func settle(_ result: Any?, _ error: String?) {
+        guard let reply = pendingReply else { return }
+        pendingReply = nil; current = nil
+        reply(result, error)
+    }
+    func speak(body: [String: Any], reply: @escaping (Any?, String?) -> Void) {
+        guard let raw = body["text"] as? String, let lang = body["lang"] as? String, ["en-US", "en-GB"].contains(lang),
+              let rate = (body["rate"] as? NSNumber)?.doubleValue, rate.isFinite, rate >= 0.5, rate <= 1.25 else { reply(nil, "Invalid pronunciation request"); return }
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, text.count <= 300, text.utf8.count <= 1200 else { reply(nil, "Invalid pronunciation text"); return }
+        // Reject before touching current playback when no installed English voice exists.
+        guard let voice = AVSpeechSynthesisVoice(language: lang) else { reply(nil, "English voice unavailable"); return }
+        stop()
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = voice
+        utterance.rate = Float(min(max(Double(AVSpeechUtteranceDefaultSpeechRate) * rate, Double(AVSpeechUtteranceMinimumSpeechRate)), Double(AVSpeechUtteranceMaximumSpeechRate)))
+        current = utterance; pendingReply = reply
+        synthesizer.speak(utterance)
+    }
+    /// Settles the pending promise as cancelled, then stops audio. Safe to call repeatedly.
+    func stop() {
+        settle(nil, "Pronunciation cancelled")
+        if synthesizer.isSpeaking || synthesizer.isPaused { synthesizer.stopSpeaking(at: .immediate) }
+    }
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        #if QA_SMOKE
+        NSLog("QA_SMOKE AVSpeechSynthesizer didFinish")
+        #endif
+        Task { @MainActor in if self.current === utterance { self.settle(["status": "finished"], nil) } }
+    }
+    #if QA_SMOKE
+    // TEST-ONLY evidence that the real synthesizer delegate fired (not a mocked reply).
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) { NSLog("QA_SMOKE AVSpeechSynthesizer didStart") }
+    #endif
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        Task { @MainActor in if self.current === utterance { self.settle(nil, "Pronunciation cancelled") } }
+    }
+}
+
+private final class MacPronunciationProxy: NSObject, WKScriptMessageHandlerWithReply {
+    weak var owner: MacWebSession?
+    @MainActor func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage, replyHandler: @escaping (Any?, String?) -> Void) {
+        guard let owner else { replyHandler(nil, "Pronunciation unavailable"); return }
+        owner.receivePronunciation(message, reply: replyHandler)
+    }
+}
+
 @MainActor final class MacWebSession: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
     @Published var failure: String?
     @Published var loading = true
@@ -131,6 +243,8 @@ private let macPopupPrintScript = "window.print = function() { if (document.docu
 
     let webView: WKWebView
     private let proxy = MacExportMessageProxy()
+    private let pronunciationProxy = MacPronunciationProxy()
+    private let speaker = MacPronunciationSpeaker()
     private var observers: [NSKeyValueObservation] = []
 
     private var lastTrustedGesture: Date?
@@ -159,6 +273,8 @@ private let macPopupPrintScript = "window.print = function() { if (document.docu
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         proxy.owner = self
+        pronunciationProxy.owner = self
+        configuration.userContentController.addScriptMessageHandler(pronunciationProxy, contentWorld: .page, name: "orunPronunciation")
         configuration.userContentController.addScriptMessageHandler(proxy, contentWorld: .page, name: "orunExport")
         configuration.userContentController.addUserScript(WKUserScript(source: macExportScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         webView.navigationDelegate = self
@@ -175,11 +291,13 @@ private let macPopupPrintScript = "window.print = function() { if (document.docu
 
     // MARK: toolbar actions
     func load() {
+        speaker.stop()
         cancelExport()
         failure = nil; loading = true; progress = 0
         webView.load(URLRequest(url: MacExportPolicy.home))
     }
     func reload() {
+        speaker.stop()
         if failure != nil || !MacExportPolicy.trusted(webView.url) { load(); return }
         cancelExport(); failure = nil; loading = true
         webView.reload()
@@ -197,16 +315,33 @@ private let macPopupPrintScript = "window.print = function() { if (document.docu
     }
 
     // MARK: navigation
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { if webView === self.webView { loading = false } }
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { if webView === self.webView { speaker.stop() } }
+    func stopPronunciation() { speaker.stop() }
+    fileprivate func receivePronunciation(_ message: WKScriptMessage, reply: @escaping (Any?, String?) -> Void) {
+        guard message.name == "orunPronunciation", message.webView === webView, trustedFrame(message.frameInfo), let body = message.body as? [String: Any] else { reply(nil, "Not allowed"); return }
+        // Stopping needs no user gesture, only the trusted main frame checked above.
+        if body["op"] as? String == "stop" { speaker.stop(); reply(["status": "stopped"], nil); return }
+        guard hasRecentTrustedGesture else { reply(nil, "Not allowed"); return }
+        speaker.speak(body: body, reply: reply)
+    }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if webView === self.webView { loading = false }
+        #if QA_SMOKE
+        if webView === self.webView, ProcessInfo.processInfo.arguments.contains("--qa-pronunciation"), MacExportPolicy.trusted(webView.url) {
+            webView.evaluateJavaScript(macQAPronunciationScript, completionHandler: nil)
+        }
+        #endif
+    }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { if webView === self.webView { fail(error) } }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { if webView === self.webView { fail(error) } }
     private func fail(_ error: Error) {
         let e = error as NSError
         guard e.code != NSURLErrorCancelled, !(e.domain == "WebKitErrorDomain" && e.code == 102) else { return }
         loading = false
-        failure = "학습 화면을 열지 못했어요. 인터넷 연결을 확인한 후 다시 시도해 주세요. 오프라인 단어장은 계속 사용할 수 있어요."
+        failure = "학습 화면을 열지 못했어요. 인터넷 연결을 확인한 후 다시 시도해 주세요."
     }
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        speaker.stop()
         cancelExport(); loading = false
         failure = "학습 화면이 종료되었어요. 다시 열어 주세요."
     }
@@ -515,6 +650,7 @@ struct MacWebStudyView: View {
         .alert("파일 내보내기", isPresented: Binding(get: { session.exportError != nil }, set: { if !$0 { session.exportError = nil } })) {
             Button("확인") { session.exportError = nil }
         } message: { Text(session.exportError ?? "") }
-        .frame(minWidth: 480, minHeight: 360)
+        .onDisappear { session.stopPronunciation() }
+        .frame(minWidth: 0, minHeight: 360)
     }
 }

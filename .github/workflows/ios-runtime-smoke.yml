@@ -1,11 +1,13 @@
 name: iOS runtime smoke
+# iOS Simulator on GitHub-hosted macOS VMs. NOT a physical device and NOT a distributable build:
+# the app is compiled with the test-only QA_SMOKE flag. Never signed, archived or submitted.
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   runtime-smoke:
-    name: Native runtime (${{ matrix.device }})
+    name: Simulator runtime QA_SMOKE (${{ matrix.device }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 50
     strategy:
@@ -31,7 +33,7 @@ jobs:
       SMOKE_OUTPUT_DIR: runtime-smoke/${{ matrix.device }}
     steps:
       - uses: actions/checkout@v4
-      - name: Build app and XCTest runner without starting a simulator
+      - name: Build QA_SMOKE test-only app and XCTest runner without starting a simulator
         timeout-minutes: 15
         shell: bash
         run: |
@@ -42,11 +44,19 @@ jobs:
           xcodebuild -project native/ios/OrunVoca.xcodeproj -scheme OrunVocaSmoke \
             -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath native/ios/build/DerivedData \
+            'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) QA_SMOKE' \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build-for-testing \
             2>&1 | tee "$SMOKE_OUTPUT_DIR/build-for-testing.log"
-          ditto -c -k --sequesterRsrc --keepParent \
-            native/ios/build/DerivedData/Build/Products/Debug-iphonesimulator/OrunVoca.app \
-            "$SMOKE_OUTPUT_DIR/OrunVoca-simulator.zip"
+          APP=native/ios/build/DerivedData/Build/Products/Debug-iphonesimulator/OrunVoca.app
+          # Prove the flag took effect (fixture compiled in); this binary is test-only.
+          MARKED="$(grep -r -a -l 'orun-qa-smoke' "$APP" || true)"
+          test -n "$MARKED" || { echo "QA_SMOKE fixture missing from test build"; exit 1; }
+          { echo "flavor=QA_SMOKE (TEST ONLY, simulator, unsigned, never distribute)"
+            echo "fixture_in=$MARKED"
+            find "$APP" -type f \( -name OrunVoca -o -name '*.dylib' \) -exec shasum -a 256 {} \;
+          } | tee "$SMOKE_OUTPUT_DIR/build-flavor.txt"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" \
+            "$SMOKE_OUTPUT_DIR/OrunVoca-QA_SMOKE-simulator-TEST-ONLY.zip"
       - name: Prepare only selected device for mandatory XCTest
         id: simulator
         timeout-minutes: 12
@@ -54,21 +64,22 @@ jobs:
         run: |
           set -euo pipefail
           node native/ios/scripts/runtime-smoke.mjs 2>&1 | tee "$SMOKE_OUTPUT_DIR/launch.log"
-      - name: Native exact-count multi-card review and persistence UI regression
-        # Separate from compilation and 480-second cold boot. Prior XCTest itself took 116s,
-        # while total xcode test work took 255s before build; six minutes was not safe.
+      - name: Online launch without tabs and native pronunciation bridge completion
+        # Separate from compilation and 480-second cold boot. Two UI tests in one runner.
+        # Pronunciation: real XCTest tap -> trusted DOM click -> native gesture gate ->
+        # AVSpeechSynthesizer didFinish. A missing en-US voice fails with the exact native error.
         timeout-minutes: 15
         shell: bash
         run: |
           set -euo pipefail
-          # Fresh simulator-only sandbox: never a user's notebook or an authenticated session.
-          # The hosted simulator is fresh; XCTest installs and cold-launches the app.
-          # The test asserts an empty notebook, so stale app data cannot silently pass.
+          # Fresh simulator-only sandbox: never an authenticated session. Public login page only;
+          # the tests never type into, submit, create, save or delete site data.
           xcodebuild -project native/ios/OrunVoca.xcodeproj -scheme OrunVocaSmoke \
             -configuration Debug -destination "platform=iOS Simulator,id=$SMOKE_UDID" \
             -destination-timeout 60 -derivedDataPath native/ios/build/DerivedData \
             -resultBundlePath "$SMOKE_OUTPUT_DIR/NativeSmoke.xcresult" \
-            -only-testing:OrunVocaUITests/RuntimeSmokeTests/testEmptyNotebookAddRevealReview \
+            -only-testing:OrunVocaUITests/RuntimeSmokeTests/testOnlineLaunchWithoutNotebookOrTabs \
+            -only-testing:OrunVocaUITests/RuntimeSmokeTests/testPronunciationBridgeNativeCompletion \
             -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1 \
             -test-timeouts-enabled YES -default-test-execution-time-allowance 480 \
             -maximum-test-execution-time-allowance 600 \
@@ -94,6 +105,8 @@ jobs:
             fs.writeFileSync(output + '.error.log', String(error));
           }
           JS
+          echo "Environment: GitHub-hosted macOS VM running iOS Simulator ($SMOKE_DEVICE_FAMILY). Not a physical device." \
+            > "$SMOKE_OUTPUT_DIR/ENVIRONMENT.txt"
           if [ -d "$SMOKE_OUTPUT_DIR/NativeSmoke.xcresult" ]; then
             xcrun xcresulttool export attachments --path "$SMOKE_OUTPUT_DIR/NativeSmoke.xcresult" \
               --output-path "$SMOKE_OUTPUT_DIR/test-attachments" \

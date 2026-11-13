@@ -1,3 +1,17 @@
 
 build-logs/
 OrunVoca-simulator.zip
+node_modules/
+native/macOS/build/
+native/ios/build/
+native/windows/dist/
+native/android/.gradle/
+native/android/build/
+native/android/app/build/
+*.p12
+*.p8
+*.mobileprovision
+*.keystore
+*.jks
+keystore.properties
+local.properties

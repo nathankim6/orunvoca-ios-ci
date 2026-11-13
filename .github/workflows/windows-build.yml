@@ -1,0 +1,78 @@
+name: Windows unsigned NSIS build and runtime smoke
+# Manual only. Builds an UNSIGNED x64 NSIS installer and runs runtime smoke tests on a
+# GitHub-hosted Windows VM (not a physical user device). Uploads workflow artifacts only:
+# no release, no publish, no store submission, no secrets.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    name: Build x64 NSIS installer, install, launch, verify, uninstall
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      EVIDENCE: ${{ github.workspace }}\windows-evidence
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: native/windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: native/windows/package-lock.json
+      - name: Toolchain
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:EVIDENCE\logs" | Out-Null
+          $t = [ordered]@{ os = [Environment]::OSVersion.VersionString; node = (node -v); npm = (npm -v); pwsh = $PSVersionTable.PSVersion.ToString(); runner = 'GitHub-hosted windows-latest VM' }
+          $t | ConvertTo-Json | Tee-Object -FilePath "$env:EVIDENCE\logs\toolchain.json"
+      - name: npm ci (cold install from package-lock.json)
+        run: |
+          npm ci --no-audit --no-fund 2>&1 | Tee-Object -FilePath "$env:EVIDENCE\logs\npm-ci.log"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Make sure the Electron binary is present even if install scripts were skipped.
+          node node_modules/electron/install.js 2>&1 | Tee-Object -Append -FilePath "$env:EVIDENCE\logs\npm-ci.log"
+          Get-Content node_modules/electron/dist/version
+      - name: Node tests
+        run: |
+          node --test test/*.test.js 2>&1 | Tee-Object -FilePath "$env:EVIDENCE\logs\node-tests.log"
+          exit $LASTEXITCODE
+      - name: Runtime smoke from source (real Electron launch, synthetic fixture)
+        run: |
+          npx electron smoke/harness-main.js "--out=$env:EVIDENCE" --label=source 2>&1 | Tee-Object -FilePath "$env:EVIDENCE\logs\source-harness.log"
+          exit $LASTEXITCODE
+      - name: Build unsigned NSIS x64 installer (publish never)
+        if: ${{ !cancelled() }}  # still build/collect evidence after a failed smoke step; job stays failed
+        run: |
+          npx electron-builder --win nsis --x64 --publish never 2>&1 | Tee-Object -FilePath "$env:EVIDENCE\logs\electron-builder.log"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem dist | Format-Table Name, Length | Out-String | Tee-Object -Append -FilePath "$env:EVIDENCE\logs\electron-builder.log"
+      - name: Installer facts (hash, size, signature)
+        if: ${{ !cancelled() }}  # still build/collect evidence after a failed smoke step; job stays failed
+        run: |
+          $f = Get-Item 'dist\OrunVoca-Setup-1.0.1-x64-unsigned.exe'
+          $h = (Get-FileHash -Algorithm SHA256 $f.FullName).Hash.ToLower()
+          "$h  $($f.Name)" | Set-Content -Encoding ascii "$env:EVIDENCE\installer.sha256"
+          [ordered]@{ file = $f.Name; bytes = $f.Length; sha256 = $h; authenticode = (Get-AuthenticodeSignature $f.FullName).Status.ToString(); label = 'UNSIGNED (no code-signing certificate available)'; version = '1.0.1'; arch = 'x64'; target = 'nsis' } |
+            ConvertTo-Json | Tee-Object -FilePath "$env:EVIDENCE\installer-facts.json"
+          node smoke/check-asar.js dist/win-unpacked/resources/app.asar "$env:EVIDENCE\built-asar-contents.json"
+          exit $LASTEXITCODE
+      - name: Install silently, launch installed app, verify, uninstall
+        if: ${{ !cancelled() }}  # still build/collect evidence after a failed smoke step; job stays failed
+        run: |
+          ./smoke/windows-installer-smoke.ps1 -Installer 'dist\OrunVoca-Setup-1.0.1-x64-unsigned.exe' -Evidence $env:EVIDENCE 2>&1 |
+            Tee-Object -FilePath "$env:EVIDENCE\logs\installer-lifecycle.log"
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: OrunVoca-Windows-x64-unsigned-1.0.1
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            native/windows/dist/OrunVoca-Setup-1.0.1-x64-unsigned.exe
+            windows-evidence

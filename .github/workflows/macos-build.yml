@@ -1,4 +1,6 @@
 name: macOS unsigned build and runtime smoke
+# Manual only. GitHub-hosted macOS VM, not a physical Mac. Unsigned; no signing, notarization or upload.
+# Production artifact is built and packaged BEFORE the separate test-only QA_SMOKE build exists.
 on:
   workflow_dispatch:
 permissions:
@@ -7,25 +9,56 @@ jobs:
   macos:
     name: Build universal app and launch it
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 40
+    env:
+      RUNTIME_ENVIRONMENT_LABEL: GitHub-hosted macos-15 VM (virtual machine, not a physical Mac)
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain
         run: |
           sw_vers; xcodebuild -version; xcrun --sdk macosx swiftc --version
+      - name: Native shell static tests
+        run: node --test native/macOS/Tests/native-shell.test.mjs
       - name: Build unsigned universal app and run model checks
         run: bash native/macOS/build-app.sh build
+      - name: Package production artifact before any QA build
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p mac-smoke
+          cd native/macOS/build && ditto -c -k --sequesterRsrc --keepParent "옳은VOCA.app" "$GITHUB_WORKSPACE/OrunVoca-mac-unsigned.zip"
+          cd "$GITHUB_WORKSPACE"
+          shasum -a 256 OrunVoca-mac-unsigned.zip | tee mac-smoke/app-zip.sha256
+          cp native/macOS/build/build-flavor.txt mac-smoke/production-build-flavor.txt
       - name: Launch app and verify windows through Accessibility
         run: bash native/macOS/runtime-smoke.sh "native/macOS/build/옳은VOCA.app" "$PWD/mac-smoke"
-      - name: Package
+      - name: Build separate QA_SMOKE test-only app (never packaged)
+        if: always()
+        run: QA_SMOKE=1 SKIP_MODEL_CHECKS=1 bash native/macOS/build-app.sh build-qa
+      - name: QA_SMOKE native pronunciation bridge runtime (real click and AVSpeechSynthesizer)
         if: always()
         run: |
-          cd native/macOS/build && ditto -c -k --sequesterRsrc --keepParent "옳은VOCA.app" "$GITHUB_WORKSPACE/OrunVoca-mac-unsigned.zip" || true
-          shasum -a 256 "$GITHUB_WORKSPACE/OrunVoca-mac-unsigned.zip" | tee "$GITHUB_WORKSPACE/mac-smoke/app-zip.sha256" || true
+          cp native/macOS/build-qa/build-flavor.txt mac-smoke/qa-build-flavor.txt || true
+          bash native/macOS/runtime-smoke.sh "native/macOS/build-qa/옳은VOCA.app" "$PWD/mac-smoke/qa-pronunciation" pronunciation
+      - name: Verify final artifact is the unchanged production build without QA
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          shasum -a 256 -c mac-smoke/app-zip.sha256
+          rm -rf "$RUNNER_TEMP/verify" && mkdir -p "$RUNNER_TEMP/verify"
+          ditto -x -k OrunVoca-mac-unsigned.zip "$RUNNER_TEMP/verify"
+          BIN="$RUNNER_TEMP/verify/옳은VOCA.app/Contents/MacOS/OrunVoca"
+          if grep -a -q 'orun-qa-smoke' "$BIN"; then echo "FAIL: production zip contains QA_SMOKE fixture"; exit 1; fi
+          if /usr/libexec/PlistBuddy -c 'Print :OrunBuildFlavor' "$RUNNER_TEMP/verify/옳은VOCA.app/Contents/Info.plist" 2>/dev/null; then echo "FAIL: QA flavor key in production"; exit 1; fi
+          echo "production_zip_binary_sha256=$(shasum -a 256 "$BIN" | cut -d' ' -f1)" | tee mac-smoke/final-artifact-check.txt
+          grep -q "$(shasum -a 256 "$BIN" | cut -d' ' -f1)" mac-smoke/production-build-flavor.txt
+          echo "PASS: final artifact is production flavor, QA_SMOKE absent" | tee -a mac-smoke/final-artifact-check.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: OrunVoca-macOS-unsigned
+          # The QA_SMOKE app is intentionally not uploaded; only its hashes/evidence are.
           path: |
             OrunVoca-mac-unsigned.zip
             mac-smoke
