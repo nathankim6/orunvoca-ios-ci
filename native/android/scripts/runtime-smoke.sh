@@ -32,6 +32,8 @@ wait_text() { # $1 text $2 seconds $3 dump-name
 contains() { grep -q -- "$2" "$OUT/$1.xml" 2>/dev/null; }
 
 adb install -r "$APK" | tee "$OUT/install.log"
+# Emulator networking can lag the boot; the app itself is also checked offline below.
+for i in $(seq 1 60); do adb shell ping -c 1 -W 2 orunvoca.co.kr >/dev/null 2>&1 && break; sleep 2; done
 adb shell getprop ro.build.version.release > "$OUT/android-version.txt"
 adb shell am force-stop com.android.chrome || true
 
@@ -60,7 +62,7 @@ check "Custom Tab shows Google sign-in" "contains 03-google-tab 'accounts.google
 check "Custom Tab runs in the app task" "awk '/Task id/{t=\$0} /CustomTabActivity/{print t; exit}' '$OUT/03-activities.txt' | grep -q $PKG"
 
 # 3. Cancelling returns to the app with a usable login page.
-adb shell input keyevent 4
+grep -q -i 'customtabs' "$OUT/03-resumed.txt" && adb shell input keyevent 4
 sleep 3
 check "back returns to the app" "resumed | grep -q $PKG/.MainActivity"
 check "login page is usable again after cancel" "wait_text 'Google로 로그인' 60 04-after-cancel"
@@ -79,10 +81,8 @@ adb shell am start -n $PKG/.MainActivity >/dev/null
 check "offline screen shown" "wait_text '연결할 수 없어요' 45 06-offline"
 sleep 1; shot 06-offline
 adb shell svc wifi enable; adb shell svc data enable
-sleep 8
-xy=$(center "$OUT/06-offline.xml" '다시 시도' || center "$OUT/06-offline.xml" '학습 화면 다시 열기')
-[ -n "$xy" ] && adb shell input tap $xy
-check "retry recovers to the login page" "wait_text 'Google로 로그인' 90 07-recovered"
+# No tap: the app must reopen by itself once the connection returns.
+check "reconnect reopens the login page automatically" "wait_text 'Google로 로그인' 90 07-recovered"
 sleep 1; shot 07-recovered
 
 adb logcat -d -t 2000 > "$OUT/logcat.txt" 2>/dev/null || true

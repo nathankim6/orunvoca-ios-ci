@@ -18,8 +18,8 @@
     const p = m[1].split(/[\s,\/]+/).filter(Boolean).map(parseFloat);
     return (p.length < 4 || p[3] >= 0.9) ? p.slice(0, 3).map(Math.round) : null;
   };
-  const at = y => {
-    let el = document.elementFromPoint(innerWidth / 2, y);
+  const at = (y, x = innerWidth / 2) => {
+    let el = document.elementFromPoint(x, y);
     while (el && el !== root) { const c = parse(getComputedStyle(el).backgroundColor); if (c) return c; el = el.parentElement; }
     return document.body ? parse(getComputedStyle(document.body).backgroundColor) : null;
   };
@@ -27,7 +27,8 @@
   const report = (delay = 80) => {
     clearTimeout(timer);
     timer = setTimeout(() => {
-      const top = at(2) || at(14), bottom = at(innerHeight - 2) || top;
+      // Bottom: sample the page edge (x=2), not a centred button that happens to sit there.
+      const top = at(2) || at(14), bottom = at(innerHeight - 2, 2) || top;
       if (!top) return;
       const message = JSON.stringify({ top, bottom });
       if (message === last) return;

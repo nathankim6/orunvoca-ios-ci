@@ -108,6 +108,7 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
     private String shellScript;
     private SharedPreferences authPrefs;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private android.net.ConnectivityManager.NetworkCallback networkCallback;
 
     private TextToSpeech tts;
     private boolean ttsReady;
@@ -183,6 +184,24 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         if (state != null) { web.restoreState(state); hideSplash(false); } else web.loadUrl(UrlPolicy.HOME);
         handleAuthIntent(getIntent());
         mainHandler.postDelayed(() -> hideSplash(true), 12000);
+        watchNetwork();
+    }
+
+    /** When the connection comes back while the offline screen is up, reopen automatically. */
+    private void watchNetwork() {
+        android.net.ConnectivityManager cm = getSystemService(android.net.ConnectivityManager.class);
+        if (cm == null) return;
+        networkCallback = new android.net.ConnectivityManager.NetworkCallback() {
+            @Override public void onAvailable(android.net.Network network) {
+                mainHandler.postDelayed(() -> {
+                    if (webError == null || webError.getVisibility() != View.VISIBLE || isFinishing()) return;
+                    webError.setVisibility(View.GONE);
+                    String current = web.getUrl();
+                    web.loadUrl(UrlPolicy.isTrusted(current) ? current : UrlPolicy.HOME);
+                }, 1500);
+            }
+        };
+        try { cm.registerDefaultNetworkCallback(networkCallback); } catch (RuntimeException e) { networkCallback = null; }
     }
 
     @Override
@@ -1016,6 +1035,10 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
     protected void onDestroy() {
         stopSpeech();
         mainHandler.removeCallbacksAndMessages(null);
+        if (networkCallback != null) {
+            try { getSystemService(android.net.ConnectivityManager.class).unregisterNetworkCallback(networkCallback); } catch (RuntimeException ignored) { }
+            networkCallback = null;
+        }
         if (tts != null) { tts.shutdown(); tts = null; }
         if (fileCallback != null) { fileCallback.onReceiveValue(null); fileCallback = null; }
         if (web != null) { ((ViewGroup) web.getParent()).removeView(web); web.destroy(); }

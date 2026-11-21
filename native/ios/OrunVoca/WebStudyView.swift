@@ -4,6 +4,7 @@ import AVFoundation
 import SafariServices
 import UniformTypeIdentifiers
 import AuthenticationServices
+import Network
 
 /// Google sign-in for staff runs in the system authentication sheet (Google blocks embedded
 /// web views). Only the project's Supabase authorize endpoint is handed over; the result
@@ -398,6 +399,7 @@ private final class PronunciationProxy: NSObject, WKScriptMessageHandlerWithRepl
     private var progressObservation: NSKeyValueObservation?
     private var splashDeadline: Timer?
     private var authSession: ASWebAuthenticationSession?
+    private let pathMonitor = NWPathMonitor()
     @Published var printSource: WebPrintSource?
     private var printPopup: WKWebView?
     private var lastTrustedGesture: Date?
@@ -453,6 +455,16 @@ private final class PronunciationProxy: NSObject, WKScriptMessageHandlerWithRepl
         splashDeadline = Timer.scheduledTimer(withTimeInterval: 12, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.hideSplash() }
         }
+        // When the connection returns while the offline screen is up, reopen automatically.
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            guard path.status == .satisfied else { return }
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard let self, self.failure != nil else { return }
+                self.load()
+            }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "orunvoca.network"))
         configuration.userContentController.addScriptMessageHandler(pronunciationProxy, contentWorld: .page, name: "orunPronunciation")
         configuration.userContentController.addScriptMessageHandler(exportProxy, contentWorld: .page, name: "orunExport")
         configuration.userContentController.addUserScript(WKUserScript(source: exportScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
