@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- System splash icon box is 288dp with a 192dp visible circle; the mark fills ~150dp. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/launch_logo"
+    android:inset="24%" />

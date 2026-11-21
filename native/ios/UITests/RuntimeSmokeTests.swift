@@ -32,7 +32,7 @@ final class RuntimeSmokeTests: XCTestCase {
     /// Waits for live public login-page content from the real WKWebView document.
     private func waitForOnlineLoginPage(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
         let heading = app.webViews.firstMatch.descendants(matching: .any)
-            .matching(NSPredicate(format: "label CONTAINS %@", "액세스 코드")).firstMatch
+            .matching(NSPredicate(format: "label CONTAINS %@ OR label CONTAINS %@", "반 코드", "액세스 코드")).firstMatch
         let ready = heading.waitForExistence(timeout: 90)
         if !ready { capture("online-load-failed"); attachHierarchy(app, "online-load-failed") }
         XCTAssertTrue(ready, "The live public login page must finish loading in WKWebView", file: file, line: line)
@@ -71,7 +71,11 @@ final class RuntimeSmokeTests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication(bundleIdentifier: "com.orunvoca.app")
         app.launch()
+        capture("launch-splash")
         waitForOnlineLoginPage(app)
+        // The old browser-style header (title, back, reload) must be gone.
+        XCTAssertFalse(app.buttons["이전 화면"].exists, "Browser-style back button must not be shown")
+        XCTAssertFalse(app.staticTexts["옳은VOCA"].exists, "Browser-style title bar must not be shown")
         XCTAssertEqual(app.tabBars.count, 0, "Online-only shell must not show a tab bar")
         for removed in ["오프라인 단어장", "단어 추가", "TSV 가져오기", "TSV 내보내기", "오늘의 복습 시작"] {
             XCTAssertFalse(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", removed)).firstMatch.exists,
@@ -109,4 +113,34 @@ final class RuntimeSmokeTests: XCTestCase {
         expectStatus(app, id: "cancel", pass: "QA cancel: speak rejected Pronunciation cancelled; stop stopped", any: "QA cancel.*", timeout: 20)
         capture("qa-cancelled")
     }
+    /// Staff Google sign-in: must open the system authentication sheet (not Safari/an external
+    /// browser) for accounts.google.com, and cancelling must return to a usable in-app login page.
+    /// Never enters credentials or completes a sign-in.
+    func testGoogleSignInUsesInAppAuthenticationSheet() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication(bundleIdentifier: "com.orunvoca.app")
+        app.launch()
+        waitForOnlineLoginPage(app)
+        let google = app.webViews.firstMatch.buttons["Google로 로그인"]
+        XCTAssertTrue(google.waitForExistence(timeout: 20), "Staff Google button missing on the live login page")
+        capture("login-native-shell")
+        google.tap()
+        let sheet = XCUIApplication(bundleIdentifier: "com.apple.SafariViewService")
+        let googlePage = sheet.webViews.firstMatch.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS[c] %@ OR label CONTAINS[c] %@ OR label CONTAINS[c] %@", "google", "로그인", "Sign in")).firstMatch
+        let shown = googlePage.waitForExistence(timeout: 45)
+        if !shown { capture("google-sheet-missing"); attachHierarchy(app, "google-sheet-missing"); attachHierarchy(sheet, "google-sheet-service") }
+        XCTAssertTrue(shown, "Google sign-in must appear in the in-app system authentication sheet")
+        XCTAssertEqual(app.state, .runningForeground, "The app must stay in front (no hand-off to Safari)")
+        capture("google-auth-sheet")
+        attachHierarchy(sheet, "google-auth-sheet")
+        let cancel = sheet.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "Cancel", "취소")).firstMatch
+        XCTAssertTrue(cancel.waitForExistence(timeout: 10), "Authentication sheet must offer Cancel (ASWebAuthenticationSession)")
+        cancel.tap()
+        XCTAssertTrue(google.waitForExistence(timeout: 30), "Cancelling must return to the in-app login page")
+        let idle = NSPredicate(format: "isEnabled == true")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: idle, object: google)], timeout: 20), .completed, "Google button must be usable again")
+        capture("google-cancel-back-in-app")
+    }
+
 }

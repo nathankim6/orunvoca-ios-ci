@@ -81,6 +81,7 @@ jobs:
             -resultBundlePath "$SMOKE_OUTPUT_DIR/NativeSmoke.xcresult" \
             -only-testing:OrunVocaUITests/RuntimeSmokeTests/testOnlineLaunchWithoutNotebookOrTabs \
             -only-testing:OrunVocaUITests/RuntimeSmokeTests/testPronunciationBridgeNativeCompletion \
+            -only-testing:OrunVocaUITests/RuntimeSmokeTests/testGoogleSignInUsesInAppAuthenticationSheet \
             -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1 \
             -test-timeouts-enabled YES -default-test-execution-time-allowance 480 \
             -maximum-test-execution-time-allowance 600 \

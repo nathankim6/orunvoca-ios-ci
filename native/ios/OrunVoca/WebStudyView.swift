@@ -3,6 +3,24 @@ import WebKit
 import AVFoundation
 import SafariServices
 import UniformTypeIdentifiers
+import AuthenticationServices
+
+/// Google sign-in for staff runs in the system authentication sheet (Google blocks embedded
+/// web views). Only the project's Supabase authorize endpoint is handed over; the result
+/// returns through this app-only callback and is loaded back into the trusted web view.
+enum NativeAuth {
+    static let scheme = "com.orunvoca.app"
+    static let callback = "com.orunvoca.app://auth-callback"
+    static let authHost = "jpanpwbdlhsxnyaldddm.supabase.co"
+    static func isAuthorize(_ url: URL) -> Bool {
+        url.scheme == "https" && url.host == authHost && url.path == "/auth/v1/authorize"
+            && (url.port == nil || url.port == 443) && url.user == nil && url.password == nil
+    }
+    static func isCallback(_ url: URL?) -> Bool {
+        guard let url else { return false }
+        return url.scheme == scheme && url.host == "auth-callback" && url.user == nil && url.password == nil
+    }
+}
 
 // Export bridge deliberately accepts bytes, never paths or remote URLs.
 private enum ExportPolicy {
@@ -175,6 +193,74 @@ private let exportScript = #"""
 })();
 """#
 
+// Native-feel layer for the trusted main frame only: no tap flash, no long-press callouts on
+// controls, no accidental pinch/auto-zoom, and the colour painted at the top of the page is
+// reported so the native status-bar strip always matches it. Reads styles only, never data.
+private let shellScript = #"""
+(() => {
+  if (window !== window.top || location.origin !== 'https://orunvoca.co.kr') return;
+  const root = document.documentElement;
+  root.setAttribute('data-native-app', 'ios');
+  const style = document.createElement('style');
+  style.textContent = 'html{-webkit-tap-highlight-color:transparent}' +
+    'a,button,img,svg,nav,[role=button],[role=tab],[role=menuitem]{-webkit-touch-callout:none}' +
+    'button,nav,label,[role=button],[role=tab],[role=menuitem],.login-submit,.login-google{-webkit-user-select:none;user-select:none}';
+  (document.head || root).appendChild(style);
+  const lockZoom = () => {
+    const meta = document.querySelector('meta[name=viewport]');
+    if (meta && !/maximum-scale/.test(meta.content)) meta.content += ', maximum-scale=1';
+  };
+  const handler = window.webkit.messageHandlers.orunChrome;
+  const parse = value => {
+    const m = /rgba?\(([^)]+)\)/.exec(value || '');
+    if (!m) return null;
+    const p = m[1].split(/[\s,\/]+/).filter(Boolean).map(parseFloat);
+    return (p.length < 4 || p[3] >= 0.9) ? p.slice(0, 3).map(Math.round) : null;
+  };
+  const sample = () => {
+    for (const y of [2, 14]) {
+      let el = document.elementFromPoint(innerWidth / 2, y);
+      while (el && el !== root) { const c = parse(getComputedStyle(el).backgroundColor); if (c) return c; el = el.parentElement; }
+    }
+    return document.body ? parse(getComputedStyle(document.body).backgroundColor) : null;
+  };
+  let last = '', timer = 0;
+  const report = (delay = 80) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      lockZoom();
+      const c = sample();
+      if (!c) return;
+      const key = c.join(',');
+      if (key === last) return;
+      last = key;
+      handler.postMessage({ r: c[0], g: c[1], b: c[2] });
+    }, delay);
+  };
+  for (const name of ['pushState', 'replaceState']) {
+    const original = history[name];
+    history[name] = function () { const result = original.apply(this, arguments); report(260); return result; };
+  }
+  addEventListener('popstate', () => report(260));
+  addEventListener('resize', () => report(160));
+  addEventListener('scroll', () => report(220), true);
+  document.addEventListener('DOMContentLoaded', () => {
+    report(0);
+    new MutationObserver(() => report(120)).observe(root, { attributes: true, attributeFilter: ['data-theme', 'class'] });
+    const app = document.getElementById('root');
+    if (app) new MutationObserver(() => report(200)).observe(app, { childList: true });
+  });
+  addEventListener('load', () => { report(0); setTimeout(() => report(0), 700); });
+})();
+"""#
+
+private final class ChromeMessageProxy: NSObject, WKScriptMessageHandler {
+    weak var owner: WebSession?
+    @MainActor func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        owner?.receiveChrome(message)
+    }
+}
+
 #if QA_SMOKE
 // TEST-ONLY fixture. Compiled solely with -D QA_SMOKE (CI runtime smoke) and only
 // injected for the --qa-pronunciation launch argument into the trusted HTTPS main
@@ -300,7 +386,18 @@ private final class PronunciationProxy: NSObject, WKScriptMessageHandlerWithRepl
     }
 }
 
-@MainActor final class WebSession: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
+@MainActor final class WebSession: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, ASWebAuthenticationPresentationContextProviding {
+    // Native shell state: page-matched status strip, launch splash, slim load indicator.
+    @Published var chromeColor: UIColor = Brand.paper
+    @Published var chromeIsDark = false
+    @Published var showSplash = true
+    @Published var progress: Double = 0
+    @Published var progressVisible = false
+    @Published var signingIn = false
+    private let chromeProxy = ChromeMessageProxy()
+    private var progressObservation: NSKeyValueObservation?
+    private var splashDeadline: Timer?
+    private var authSession: ASWebAuthenticationSession?
     @Published var printSource: WebPrintSource?
     private var printPopup: WKWebView?
     private var lastTrustedGesture: Date?
@@ -335,10 +432,27 @@ private final class PronunciationProxy: NSObject, WKScriptMessageHandlerWithRepl
         // Async teacher exports may outlive WebKit activation. Every popup path
         // below still requires the exact mainframe creator and native gesture TTL.
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1"
+        configuration.applicationNameForUserAgent = "Mobile/15E148 OrunVocaApp/\(version)"
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         exportProxy.owner = self
         pronunciationProxy.owner = self
+        chromeProxy.owner = self
+        configuration.userContentController.add(chromeProxy, contentWorld: .page, name: "orunChrome")
+        configuration.userContentController.addUserScript(WKUserScript(source: shellScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        webView.isOpaque = false
+        webView.backgroundColor = Brand.paper
+        webView.scrollView.backgroundColor = Brand.paper
+        webView.underPageBackgroundColor = Brand.paper
+        webView.allowsLinkPreview = false
+        progressObservation = webView.observe(\.estimatedProgress, options: [.new]) { [weak self] web, _ in
+            let value = web.estimatedProgress
+            Task { @MainActor in self?.updateProgress(value) }
+        }
+        splashDeadline = Timer.scheduledTimer(withTimeInterval: 12, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.hideSplash() }
+        }
         configuration.userContentController.addScriptMessageHandler(pronunciationProxy, contentWorld: .page, name: "orunPronunciation")
         configuration.userContentController.addScriptMessageHandler(exportProxy, contentWorld: .page, name: "orunExport")
         configuration.userContentController.addUserScript(WKUserScript(source: exportScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
@@ -353,9 +467,96 @@ private final class PronunciationProxy: NSObject, WKScriptMessageHandlerWithRepl
         speaker.stop()
         cancelExport()
         failure = nil; loading = true
+        progressVisible = !showSplash
         webView.load(URLRequest(url: URL(string: "https://orunvoca.co.kr/")!))
     }
-    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { if webView === self.webView { speaker.stop() } }
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        guard webView === self.webView else { return }
+        speaker.stop()
+        if !showSplash { progressVisible = true }
+    }
+    private func updateProgress(_ value: Double) {
+        progress = max(0.08, min(1, value))
+        if value >= 1 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                guard let self, self.webView.estimatedProgress >= 1 else { return }
+                self.progressVisible = false
+            }
+        } else if !showSplash && webView.isLoading {
+            progressVisible = true
+        }
+    }
+    func hideSplash() {
+        splashDeadline?.invalidate(); splashDeadline = nil
+        if showSplash { showSplash = false }
+    }
+    fileprivate func receiveChrome(_ message: WKScriptMessage) {
+        guard message.name == "orunChrome", message.webView === webView, trustedFrame(message.frameInfo),
+              let body = message.body as? [String: Any],
+              let r = (body["r"] as? NSNumber)?.doubleValue, let g = (body["g"] as? NSNumber)?.doubleValue,
+              let b = (body["b"] as? NSNumber)?.doubleValue,
+              [r, g, b].allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= 255 }) else { return }
+        let color = UIColor(red: r / 255, green: g / 255, blue: b / 255, alpha: 1)
+        chromeColor = color
+        chromeIsDark = (0.299 * r + 0.587 * g + 0.114 * b) / 255 < 0.6
+        webView.underPageBackgroundColor = color
+    }
+
+    // MARK: Native Google sign-in
+    private func beginNativeSignIn(_ url: URL) {
+        guard authSession == nil, var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+        var items = components.queryItems ?? []
+        let requested = items.first(where: { $0.name == "redirect_to" })?.value.flatMap(URL.init(string:))
+        let returnURL = requested.flatMap { ExportPolicy.trusted($0) ? $0 : nil } ?? URL(string: "https://orunvoca.co.kr/")!
+        items.removeAll { $0.name == "redirect_to" }
+        items.append(URLQueryItem(name: "redirect_to", value: NativeAuth.callback))
+        components.queryItems = items
+        guard let authURL = components.url, NativeAuth.isAuthorize(authURL) else { return }
+        let session = ASWebAuthenticationSession(url: authURL, callbackURLScheme: NativeAuth.scheme) { [weak self] callback, error in
+            Task { @MainActor in self?.finishNativeSignIn(callback: callback, error: error, returnURL: returnURL) }
+        }
+        session.presentationContextProvider = self
+        // Ephemeral: no "wants to use … to sign in" interruption and no shared Safari cookies.
+        session.prefersEphemeralWebBrowserSession = true
+        authSession = session
+        signingIn = true
+        if !session.start() {
+            authSession = nil; signingIn = false
+            webView.reload()
+        }
+    }
+    private func finishNativeSignIn(callback: URL?, error: Error?, returnURL: URL) {
+        authSession = nil; signingIn = false
+        guard error == nil, let callback, NativeAuth.isCallback(callback),
+              var target = URLComponents(url: returnURL, resolvingAgainstBaseURL: false),
+              let result = URLComponents(url: callback, resolvingAgainstBaseURL: false) else {
+            // Cancelled or failed: reload the login page so its button is ready again.
+            if ExportPolicy.trusted(webView.url) { webView.reload() } else { load() }
+            return
+        }
+        if let code = result.queryItems?.first(where: { $0.name == "code" })?.value {
+            var query = target.queryItems ?? []
+            query.removeAll { $0.name == "code" }
+            query.append(URLQueryItem(name: "code", value: code))
+            target.queryItems = query
+        }
+        if let fragment = result.percentEncodedFragment, !fragment.isEmpty {
+            target.percentEncodedFragment = fragment
+        } else if let failure = result.queryItems?.filter({ $0.name.hasPrefix("error") }), !failure.isEmpty {
+            var errorParts = URLComponents(); errorParts.queryItems = failure
+            target.percentEncodedFragment = errorParts.percentEncodedQuery
+        }
+        guard let url = target.url, ExportPolicy.trusted(url) else { load(); return }
+        progressVisible = true
+        webView.load(URLRequest(url: url))
+    }
+    nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        MainActor.assumeIsolated {
+            if let window = webView.window { return window }
+            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            return scenes.flatMap(\.windows).first(where: \.isKeyWindow) ?? scenes.first.map { UIWindow(windowScene: $0) } ?? UIWindow()
+        }
+    }
     func stopPronunciation() { speaker.stop() }
     fileprivate func receivePronunciation(_ message: WKScriptMessage, reply: @escaping (Any?, String?) -> Void) {
         guard message.name == "orunPronunciation", message.webView === webView, trustedFrame(message.frameInfo), let body = message.body as? [String: Any] else { reply(nil, "Not allowed"); return }
@@ -366,6 +567,10 @@ private final class PronunciationProxy: NSObject, WKScriptMessageHandlerWithRepl
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         loading = false
+        if webView === self.webView, showSplash {
+            // Give the single-page app a beat to paint its first screen under the splash.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in self?.hideSplash() }
+        }
         #if QA_SMOKE
         if webView === self.webView, ProcessInfo.processInfo.arguments.contains("--qa-pronunciation"), ExportPolicy.trusted(webView.url) {
             webView.evaluateJavaScript(qaPronunciationScript, completionHandler: nil)
@@ -376,17 +581,28 @@ private final class PronunciationProxy: NSObject, WKScriptMessageHandlerWithRepl
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { fail(error) }
     private func fail(_ error: Error) {
         guard (error as NSError).code != NSURLErrorCancelled, !((error as NSError).domain == "WebKitErrorDomain" && (error as NSError).code == 102) else { return }
-        loading = false; failure = "학습 화면을 열지 못했어요. 인터넷 연결을 확인한 후 다시 시도해 주세요."
+        loading = false; progressVisible = false
+        chromeColor = Brand.paper; chromeIsDark = false
+        failure = "인터넷 연결을 확인한 뒤 다시 시도해 주세요."
+        hideSplash()
     }
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         speaker.stop()
         cancelExport()
-        loading = false; failure = "학습 화면이 종료되었어요. 다시 열어 주세요."
+        loading = false; progressVisible = false
+        chromeColor = Brand.paper; chromeIsDark = false
+        failure = "화면을 다시 불러와야 해요. 아래 버튼을 눌러 주세요."
+        hideSplash()
     }
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = action.request.url else { decisionHandler(.cancel); return }
         if webView === printPopup {
             decisionHandler(url.absoluteString == "about:blank" ? .allow : .cancel)
+            return
+        }
+        if webView === self.webView, NativeAuth.isAuthorize(url) {
+            decisionHandler(.cancel)
+            if trustedFrame(action.sourceFrame) { beginNativeSignIn(url) }
             return
         }
         if action.targetFrame == nil {
@@ -410,6 +626,7 @@ private final class PronunciationProxy: NSObject, WKScriptMessageHandlerWithRepl
     }
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         guard webView === self.webView, trustedFrame(action.sourceFrame), hasRecentTrustedGesture else { return nil }
+        if let url = action.request.url, NativeAuth.isAuthorize(url) { beginNativeSignIn(url); return nil }
         if action.request.url?.absoluteString == "about:blank", trustedFrame(action.sourceFrame), printPopup == nil, printSource == nil, !exporting, exportFile == nil {
             // One ephemeral blank popup, inherited from the exact HTTPS creator.
             // Native code accepts only its existing formatter, never supplied HTML or URLs.
@@ -557,32 +774,98 @@ struct BrowserSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: SFSafariViewController, context: Context) {}
 }
 struct WebStudyView: View {
-    @StateObject private var session = WebSession()
+    @ObservedObject var session: WebSession
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("옳은VOCA").font(.headline)
-                Spacer()
-                Button { session.webView.goBack() } label: { Image(systemName: "chevron.backward") }.accessibilityLabel("이전 화면")
-                Button { session.load() } label: { Image(systemName: "arrow.clockwise") }.accessibilityLabel("학습 화면 다시 열기")
-            }.padding(.horizontal).padding(.vertical, 10)
-            Divider()
+        ZStack(alignment: .top) {
             if let failure = session.failure {
-                ContentUnavailableView {
-                    Label("학습 화면 연결 오류", systemImage: "wifi.exclamationmark")
-                } description: { Text(failure) } actions: { Button("다시 시도") { session.load() }.buttonStyle(.borderedProminent) }
+                OfflineStateView(message: failure) { session.load() }
+                    .transition(.opacity)
             } else {
+                // Full-bleed below the status strip; the page itself pads for the home indicator
+                // (env(safe-area-inset-bottom)) and WebKit handles the keyboard natively.
                 EmbeddedWebView(webView: session.webView)
-                    .overlay { if session.loading { ProgressView("학습 화면 여는 중") } }
+                    .ignoresSafeArea(edges: .bottom)
+            }
+            LoadingLine(progress: session.progress)
+                .opacity(session.progressVisible ? 1 : 0)
+                .animation(.easeOut(duration: 0.25), value: session.progressVisible)
+                .allowsHitTesting(false)
+        }
+        .animation(.easeInOut(duration: 0.3), value: session.failure)
+        .onDisappear { session.stopPronunciation() }
+        .overlay(alignment: .bottom) {
+            if session.exporting {
+                HStack(spacing: 10) {
+                    ProgressView().tint(Color(uiColor: Brand.action))
+                    Text("파일 내보내는 중…").font(.system(size: 15, weight: .semibold))
+                }
+                .padding(.horizontal, 20).padding(.vertical, 14)
+                .background(.regularMaterial, in: Capsule())
+                .shadow(color: .black.opacity(0.12), radius: 16, y: 6)
+                .padding(.bottom, 28)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .onDisappear { session.stopPronunciation() }
-        .overlay(alignment: .bottom) { if session.exporting { ProgressView("파일 내보내는 중…").padding().background(.regularMaterial).clipShape(RoundedRectangle(cornerRadius: 12)) } }
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: session.exporting)
         .alert("파일 내보내기", isPresented: Binding(get: { session.exportError != nil }, set: { if !$0 { session.exportError = nil } })) { Button("확인") { session.exportError = nil } } message: { Text(session.exportError ?? "") }
         .sheet(item: $session.printSource, onDismiss: { session.finishPrinting() }) { source in WebPrintSheet(source: source, finished: { session.printSource = nil }) }
         .sheet(item: $session.exportFile, onDismiss: { session.cancelExport() }) { file in WebExportSheet(url: file.url) }
         .sheet(isPresented: Binding(get: { session.externalURL != nil }, set: { if !$0 { session.externalURL = nil } })) {
             if let url = session.externalURL { BrowserSheet(url: url).ignoresSafeArea() }
+        }
+    }
+}
+
+/// Slim beam-yellow load indicator under the status strip (visible on light and navy pages).
+struct LoadingLine: View {
+    let progress: Double
+    var body: some View {
+        GeometryReader { proxy in
+            Capsule()
+                .fill(Color(uiColor: Brand.beam))
+                .frame(width: max(24, proxy.size.width * progress), height: 2.5)
+                .shadow(color: Color(uiColor: Brand.beam).opacity(0.6), radius: 3)
+                .animation(.easeOut(duration: 0.3), value: progress)
+        }
+        .frame(height: 3)
+    }
+}
+
+/// Branded connection-problem state instead of a generic system placeholder.
+struct OfflineStateView: View {
+    let message: String
+    let retry: () -> Void
+    var body: some View {
+        ZStack {
+            Color(uiColor: Brand.paper).ignoresSafeArea()
+            VStack(spacing: 0) {
+                ZStack {
+                    Circle().fill(Color(uiColor: Brand.navy)).frame(width: 96, height: 96)
+                    Image("LaunchLogo").resizable().scaledToFit().frame(width: 74, height: 74)
+                }
+                .padding(.bottom, 28)
+                Text("연결할 수 없어요")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(Color(uiColor: Brand.ink))
+                Text(message)
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color(uiColor: Brand.ink).opacity(0.62))
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 10)
+                    .padding(.horizontal, 36)
+                Button(action: retry) {
+                    Label("다시 시도", systemImage: "arrow.clockwise")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(minWidth: 180, minHeight: 52)
+                        .padding(.horizontal, 8)
+                        .background(Color(uiColor: Brand.action), in: Capsule())
+                        .shadow(color: Color(uiColor: Brand.action).opacity(0.35), radius: 10, y: 5)
+                }
+                .padding(.top, 30)
+                .accessibilityLabel("학습 화면 다시 열기")
+            }
+            .frame(maxWidth: 420)
         }
     }
 }
