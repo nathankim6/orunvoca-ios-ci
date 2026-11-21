@@ -33,7 +33,14 @@ final class RuntimeSmokeTests: XCTestCase {
     private func waitForOnlineLoginPage(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
         let heading = app.webViews.firstMatch.descendants(matching: .any)
             .matching(NSPredicate(format: "label CONTAINS %@ OR label CONTAINS %@", "반 코드", "액세스 코드")).firstMatch
-        let ready = heading.waitForExistence(timeout: 90)
+        // The site may show its own "로그인 확인이 늦어지고 있어요" retry card on slow CI networks.
+        var ready = false
+        let deadline = Date().addingTimeInterval(120)
+        while !ready && Date() < deadline {
+            ready = heading.waitForExistence(timeout: 8)
+            let retry = app.webViews.firstMatch.buttons["로그인 화면으로"]
+            if !ready && retry.exists { retry.tap() }
+        }
         if !ready { capture("online-load-failed"); attachHierarchy(app, "online-load-failed") }
         XCTAssertTrue(ready, "The live public login page must finish loading in WKWebView", file: file, line: line)
     }

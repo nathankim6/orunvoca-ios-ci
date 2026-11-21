@@ -36,6 +36,9 @@ adb install -r "$APK" | tee "$OUT/install.log"
 for i in $(seq 1 60); do adb shell ping -c 1 -W 2 orunvoca.co.kr >/dev/null 2>&1 && break; sleep 2; done
 adb shell getprop ro.build.version.release > "$OUT/android-version.txt"
 adb shell am force-stop com.android.chrome || true
+# Fresh emulator Chrome has never run; skip its first-run screens (real devices have done this).
+adb shell 'echo "_ --disable-fre --no-default-browser-check --no-first-run" > /data/local/tmp/chrome-command-line'
+adb shell am set-debug-app --persistent com.android.chrome
 
 # 1. Cold launch: branded splash, then the live login page inside the app.
 adb shell am start -n $PKG/.MainActivity >/dev/null
@@ -49,6 +52,11 @@ data = open(sys.argv[1], 'rb').read()
 w, h = struct.unpack('>II', data[16:24])
 print(f"login screenshot {w}x{h}")
 PY
+
+# 1b. A callback the app did not ask for (no sign-in started) must be ignored.
+adb shell am start -a android.intent.action.VIEW -d 'com.orunvoca.app://auth-callback#access_token=forged&refresh_token=forged' $PKG >/dev/null
+sleep 5; dump 05-forged; shot 05-forged-callback
+check "unsolicited callback ignored (still on login page)" "contains 05-forged 'Google로 로그인'"
 
 # 2. Staff Google sign-in must open in a Custom Tab over the app (not a separate browser app task),
 #    for accounts.google.com, with the app callback as the final redirect target.
@@ -67,11 +75,6 @@ sleep 3
 check "back returns to the app" "resumed | grep -q $PKG/.MainActivity"
 check "login page is usable again after cancel" "wait_text 'Google로 로그인' 60 04-after-cancel"
 shot 04-after-cancel
-
-# 4. An unsolicited callback (no sign-in started by the app) must be ignored.
-adb shell am start -a android.intent.action.VIEW -d 'com.orunvoca.app://auth-callback#access_token=forged&refresh_token=forged' $PKG >/dev/null
-sleep 5; dump 05-forged; shot 05-forged-callback
-check "unsolicited callback ignored (still on login page)" "contains 05-forged 'Google로 로그인'"
 
 # 5. Offline: branded connection screen, then recovery.
 adb shell am force-stop $PKG

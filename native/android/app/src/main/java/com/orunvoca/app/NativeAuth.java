@@ -15,7 +15,7 @@ public final class NativeAuth {
     public static final String CALLBACK_HOST = "auth-callback";
     public static final String CALLBACK = SCHEME + "://" + CALLBACK_HOST;
     public static final String AUTH_HOST = "jpanpwbdlhsxnyaldddm.supabase.co";
-    public static final long MAX_PENDING_MS = 15 * 60 * 1000L;
+    public static final long MAX_PENDING_MS = 10 * 60 * 1000L;
 
     private NativeAuth() { }
 
@@ -81,7 +81,9 @@ public final class NativeAuth {
         if (hash >= 0) fragment = callbackUrl.substring(hash + 1);
         int q = head.indexOf('?');
         if (q >= 0) query = head.substring(q + 1);
-        String target = stripFragment(returnUrl);
+        // A distinct query forces a full document load: a fragment-only change on the same page
+        // would not run the web client's session detection.
+        String target = withQuery(stripFragment(returnUrl), "app_signin", "1");
         String code = null;
         StringBuilder errors = new StringBuilder();
         for (String part : query.split("&")) {
@@ -98,6 +100,22 @@ public final class NativeAuth {
         else if (errors.length() > 0) { target += "#" + errors; carried = true; }
         if (!carried) return null;
         return UrlPolicy.isTrusted(target) ? target : null;
+    }
+
+    private static String withQuery(String url, String key, String value) {
+        int q = url.indexOf('?');
+        String base = q < 0 ? url : url.substring(0, q);
+        StringBuilder query = new StringBuilder();
+        if (q >= 0) {
+            for (String part : url.substring(q + 1).split("&")) {
+                if (part.isEmpty() || part.equals(key) || part.startsWith(key + "=")) continue;
+                if (query.length() > 0) query.append('&');
+                query.append(part);
+            }
+        }
+        if (query.length() > 0) query.append('&');
+        query.append(key).append('=').append(value);
+        return base + "?" + query;
     }
 
     private static String stripFragment(String url) {

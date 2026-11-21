@@ -546,12 +546,14 @@ private final class PronunciationProxy: NSObject, WKScriptMessageHandlerWithRepl
             if ExportPolicy.trusted(webView.url) { webView.reload() } else { load() }
             return
         }
-        if let code = result.queryItems?.first(where: { $0.name == "code" })?.value {
-            var query = target.queryItems ?? []
-            query.removeAll { $0.name == "code" }
-            query.append(URLQueryItem(name: "code", value: code))
-            target.queryItems = query
-        }
+        // A distinct query forces a full document load: a fragment-only change on the same page
+        // would not run the web client's session detection.
+        var query = target.queryItems ?? []
+        query.removeAll { $0.name == "app_signin" || $0.name == "code" }
+        query.append(URLQueryItem(name: "app_signin", value: "1"))
+        if let code = result.queryItems?.first(where: { $0.name == "code" })?.value { query.append(URLQueryItem(name: "code", value: code)) }
+        target.queryItems = query
+        target.percentEncodedFragment = nil
         if let fragment = result.percentEncodedFragment, !fragment.isEmpty {
             target.percentEncodedFragment = fragment
         } else if let failure = result.queryItems?.filter({ $0.name.hasPrefix("error") }), !failure.isEmpty {

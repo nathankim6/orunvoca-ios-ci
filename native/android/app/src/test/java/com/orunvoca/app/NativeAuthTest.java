@@ -42,15 +42,18 @@ public class NativeAuthTest {
     }
 
     @Test public void completionCarriesTokensOnlyIntoTrustedPage() {
-        assertEquals("https://orunvoca.co.kr/#access_token=a&refresh_token=b&type=bearer",
+        assertEquals("https://orunvoca.co.kr/?app_signin=1#access_token=a&refresh_token=b&type=bearer",
                 NativeAuth.completion("https://orunvoca.co.kr/", "com.orunvoca.app://auth-callback#access_token=a&refresh_token=b&type=bearer"));
-        assertEquals("https://orunvoca.co.kr/teacher?code=abc-123",
+        assertEquals("https://orunvoca.co.kr/teacher?app_signin=1&code=abc-123",
                 NativeAuth.completion("https://orunvoca.co.kr/teacher", "com.orunvoca.app://auth-callback?code=abc-123"));
-        assertEquals("https://orunvoca.co.kr/#error=access_denied&error_description=x",
+        assertEquals("https://orunvoca.co.kr/?app_signin=1#error=access_denied&error_description=x",
                 NativeAuth.completion("https://orunvoca.co.kr/", "com.orunvoca.app://auth-callback?error=access_denied&error_description=x"));
         assertNull(NativeAuth.completion("https://evil.example/", "com.orunvoca.app://auth-callback#access_token=a"));
         assertNull(NativeAuth.completion("https://orunvoca.co.kr/", "com.orunvoca.app://other#access_token=a"));
         assertNull(NativeAuth.completion("https://orunvoca.co.kr/", "com.orunvoca.app://auth-callback"));
         assertNull(NativeAuth.completion("https://orunvoca.co.kr/", "com.orunvoca.app://auth-callback?code=a%22%3E%3Cscript"));
+        // Existing query is kept and the marker is not duplicated.
+        assertEquals("https://orunvoca.co.kr/x?a=1&app_signin=1#access_token=t",
+                NativeAuth.completion("https://orunvoca.co.kr/x?a=1&app_signin=0", "com.orunvoca.app://auth-callback#access_token=t"));
     }
 }
