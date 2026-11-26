@@ -106,7 +106,7 @@ final class WebPrintHost: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         guard !started else { return }; started = true
-        let info = UIPrintInfo(dictionary: nil); info.jobName = String((webView.title ?? "옳은VOCA").prefix(100)); info.outputType = .general
+        let info = UIPrintInfo(dictionary: nil); info.jobName = String((webView.title ?? "옳은보카").prefix(100)); info.outputType = .general
         printer.printInfo = info; printer.printFormatter = webView.viewPrintFormatter()
         let completion: UIPrintInteractionController.CompletionHandler = { [weak self] _, _, error in
             guard let self else { return }

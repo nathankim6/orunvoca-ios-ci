@@ -51,7 +51,7 @@ const device = choices[0];
 if (!device) throw Error(`No available installed ${family} simulator on pinned runtime ${runtimeIdentifier}. This matrix leg must not be skipped.`);
 const prefix = family === 'ipad' ? 'iPad' : 'iPhone';
 const metadata = {
-  appDisplayName: '옳은VOCA', family, device,
+  appDisplayName: '옳은보카', family, device,
   runtime: selectedRuntime,
   runtimeSelection: { policy: 'required-pin-no-fallback', identifier: runtimeIdentifier },
   deviceType: types.devicetypes.find(t => t.identifier === device.deviceTypeIdentifier),

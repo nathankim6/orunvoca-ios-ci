@@ -1009,7 +1009,7 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         col.setOrientation(LinearLayout.VERTICAL);
         col.setPadding(20 * dp, 16 * dp, 20 * dp, 16 * dp);
         TextView t = new TextView(this);
-        t.setText("옳은VOCA 1.0.0");
+        t.setText("옳은보카");
         t.setTextSize(22);
         t.setTextColor(Color.BLACK);
         col.addView(t);
